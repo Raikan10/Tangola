@@ -23,5 +23,5 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-.m4a
-.wav
+*.m4a
+*.wav
