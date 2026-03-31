@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "skills": {
+    "chat": {
+      "source": "sarvamai/skills",
+      "sourceType": "github",
+      "computedHash": "a849bd326e1d2675cc1ce2ccb20ca102269adc5e909f8a625f7596823a3f74ac"
+    },
+    "speech-to-text": {
+      "source": "sarvamai/skills",
+      "sourceType": "github",
+      "computedHash": "72ed0be9c55b685ccc1dbbec95a61091aa610aa095574d1a11224cd6150b853b"
+    },
+    "text-to-speech": {
+      "source": "sarvamai/skills",
+      "sourceType": "github",
+      "computedHash": "e357293e3a79e8039f0a1618a11e73303f8917c8533178a8139d5dc266331b12"
+    },
+    "translate": {
+      "source": "sarvamai/skills",
+      "sourceType": "github",
+      "computedHash": "c5866cd4136a51ffbeae081ae90c6ca34404bfb2c40fa7cc3694d3ac79b0180d"
+    },
+    "voice-agents": {
+      "source": "sarvamai/skills",
+      "sourceType": "github",
+      "computedHash": "7ee4cc8de0ce89a32d0bedc2a637641ef83ad71360ebed103dad2e5ff1826927"
+    }
+  }
+}
