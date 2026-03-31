@@ -89,7 +89,7 @@ class SarvamProvider extends STTProvider {
         this.socket.translate({
           audio: base64Audio,
           sample_rate: 16000,
-          encoding: "audio/wav"
+          encoding: "audio/pcm"
         });
       } catch (e) {
         console.error("Failed to push chunk to Sarvam", e);

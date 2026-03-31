@@ -21,31 +21,107 @@ try {
 let pythonWs = null;
 let isRecording = false;
 let pythonProcess = null;
+let heartbeatWatchdog = null;
+let lastHeartbeat = 0;
+let engineRestartTimer = null;
 
 let mainWindow;
 let activeMeetingId = null;
 
-function startPythonEngine() {
-  const enginePath = path.resolve(__dirname, '..', 'engine', 'main.py');
-  const venvPath = path.resolve(__dirname, '..', 'engine', '.venv', 'bin', 'python');
-  
-  console.log(`Starting Python Engine: ${venvPath} ${enginePath}`);
-  
-  pythonProcess = spawn(venvPath, [enginePath], {
-    cwd: path.dirname(enginePath),
-    stdio: 'inherit'
-  });
+// ─── Path resolution: dev vs. packaged ────────────────────────────────────────
+function getEnginePaths() {
+  const isPackaged = app.isPackaged;
 
-  pythonProcess.on('error', (err) => {
-    console.error('Failed to start python engine:', err);
-  });
+  let engineDir, pythonExe;
+  if (isPackaged) {
+    // electron-builder puts extraResources at process.resourcesPath/engine
+    engineDir = path.join(process.resourcesPath, 'engine');
+  } else {
+    engineDir = path.resolve(__dirname, '..', 'engine');
+  }
 
-  pythonProcess.on('exit', (code) => {
-    console.log(`Python engine exited with code ${code}`);
-    pythonProcess = null;
-  });
+  const venvBin = process.platform === 'win32'
+    ? path.join(engineDir, '.venv', 'Scripts', 'python.exe')
+    : path.join(engineDir, '.venv', 'bin', 'python');
+
+  return { engineDir, pythonExe: venvBin, mainPy: path.join(engineDir, 'main.py') };
 }
 
+// ─── Engine process management ─────────────────────────────────────────────────
+function startPythonEngine() {
+  if (pythonProcess) return; // already running
+
+  const { engineDir, pythonExe, mainPy } = getEnginePaths();
+  const enginePath = mainPy;
+  const pythonPath = pythonExe;
+
+  console.log(`[Engine] dir=${engineDir}`);
+  console.log(`[Engine] Starting: ${pythonPath} ${enginePath}`);
+
+  pythonProcess = spawn(pythonPath, [enginePath], {
+    cwd: path.dirname(enginePath),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  pythonProcess.stdout.on('data', (d) => process.stdout.write(`[Engine] ${d}`));
+  pythonProcess.stderr.on('data', (d) => process.stderr.write(`[Engine:ERR] ${d}`));
+
+  pythonProcess.on('error', (err) => {
+    console.error('[Engine] Failed to start:', err);
+    pythonProcess = null;
+    sendStatus('engine-dead');
+    scheduleEngineRestart();
+  });
+
+  pythonProcess.on('exit', (code, signal) => {
+    console.log(`[Engine] Exited (code=${code}, signal=${signal})`);
+    pythonProcess = null;
+    sendStatus('engine-dead');
+    if (!app.isQuitting) scheduleEngineRestart();
+  });
+
+  // Give the engine 1s to boot, then start the heartbeat watchdog
+  setTimeout(startHeartbeatWatchdog, 1000);
+}
+
+function scheduleEngineRestart() {
+  if (engineRestartTimer) return;
+  console.log('[Engine] Restarting in 3s...');
+  engineRestartTimer = setTimeout(() => {
+    engineRestartTimer = null;
+    startPythonEngine();
+  }, 3000);
+}
+
+// ─── Heartbeat watchdog ────────────────────────────────────────────────────────
+// Python sends a heartbeat every 2s. If we miss 3 in a row (6s), restart the engine.
+function startHeartbeatWatchdog() {
+  if (heartbeatWatchdog) clearInterval(heartbeatWatchdog);
+  lastHeartbeat = Date.now();
+
+  heartbeatWatchdog = setInterval(() => {
+    const elapsed = Date.now() - lastHeartbeat;
+    if (elapsed > 6000) {
+      console.warn('[Watchdog] No heartbeat for 6s — restarting engine.');
+      sendStatus('engine-dead');
+      if (pythonProcess) {
+        pythonProcess.kill();
+        pythonProcess = null;
+      }
+      clearInterval(heartbeatWatchdog);
+      heartbeatWatchdog = null;
+      scheduleEngineRestart();
+    }
+  }, 2000);
+}
+
+function sendStatus(status) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('engine-status', status);
+  }
+}
+
+// ─── Meeting persistence ───────────────────────────────────────────────────────
 function getMeetingsFile() {
   return path.join(app.getPath('userData'), 'meetings.json');
 }
@@ -69,10 +145,59 @@ function saveMeetings(meetings) {
   }
 }
 
+// ─── Connect to Python WebSocket ───────────────────────────────────────────────
+async function connectToEngine() {
+  return new Promise((resolve, reject) => {
+    if (pythonWs && pythonWs.readyState === WebSocket.OPEN) {
+      return resolve();
+    }
+
+    pythonWs = new WebSocket('ws://localhost:8765');
+
+    pythonWs.on('message', (data, isBinary) => {
+      if (isBinary) {
+        // Raw audio bytes — push to STT provider
+        if (isRecording) provider.pushAudioChunk(data);
+      } else {
+        // JSON control message
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === 'heartbeat') {
+            lastHeartbeat = Date.now(); // reset watchdog timer
+          } else if (msg.type === 'status') {
+            sendStatus(msg.status);
+          }
+        } catch (_) {}
+      }
+    });
+
+    pythonWs.on('error', (err) => {
+      console.error('[WS] Engine connection error:', err.message);
+      sendStatus('error');
+      reject(err);
+    });
+
+    pythonWs.on('close', () => {
+      console.log('[WS] Engine disconnected.');
+      sendStatus('Disconnected');
+      pythonWs = null;
+    });
+
+    pythonWs.once('open', () => {
+      console.log('[WS] Connected to Python engine.');
+      sendStatus('Connected');
+      resolve();
+    });
+  });
+}
+
+// ─── Window ────────────────────────────────────────────────────────────────────
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 400,
-    height: 600,
+    width: 1200,
+    height: 800,
+    minWidth: 900,
+    minHeight: 600,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
@@ -81,34 +206,30 @@ function createWindow() {
     autoHideMenuBar: true,
   });
 
-  // Load the React app
   if (process.env.NODE_ENV === 'development') {
     mainWindow.loadURL('http://localhost:5173');
-    // mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
   }
 
-  // Setup IPC handlers
-  ipcMain.handle('get-status', () => {
-    return {
-      pythonConnected: pythonWs && pythonWs.readyState === WebSocket.OPEN,
-      recording: isRecording,
-      providerInitialized: !!provider.provider,
-      activeMeetingId
-    };
-  });
+  // ── IPC handlers ──
+  ipcMain.handle('get-status', () => ({
+    pythonConnected: pythonWs && pythonWs.readyState === WebSocket.OPEN,
+    recording: isRecording,
+    providerInitialized: !!provider.provider,
+    activeMeetingId,
+  }));
 
   ipcMain.handle('get-meetings', () => getMeetings());
 
   ipcMain.handle('create-meeting', (event, title) => {
     const meetings = getMeetings();
     const id = Date.now().toString();
-    const newMeeting = { 
-      id, 
-      title: title || `Meeting ${new Date().toLocaleString()}`, 
-      date: new Date().toISOString(), 
-      transcripts: [] 
+    const newMeeting = {
+      id,
+      title: title || `Meeting ${new Date().toLocaleString()}`,
+      date: new Date().toISOString(),
+      transcripts: [],
     };
     meetings.push(newMeeting);
     saveMeetings(meetings);
@@ -122,76 +243,65 @@ function createWindow() {
   });
 
   ipcMain.handle('start-capture', async (event, meetingId) => {
-    if (isRecording) return;
-    
-    // Connect to Python Engine
-    if (!pythonWs || pythonWs.readyState !== WebSocket.OPEN) {
-      pythonWs = new WebSocket('ws://localhost:8765');
-      pythonWs.on('message', (data, isBinary) => {
-        if (isBinary && isRecording) {
-          provider.pushAudioChunk(data);
-        }
-      });
-      pythonWs.on('error', (err) => {
-        console.error("Python WS Error", err);
-        mainWindow.webContents.send('engine-status', 'error');
-      });
-      pythonWs.on('close', () => mainWindow.webContents.send('engine-status', 'Disconnected'));
-      
-      try {
-        // wait until open before sending start
-        await new Promise((resolve, reject) => {
-          pythonWs.once('open', () => {
-            mainWindow.webContents.send('engine-status', 'Connected');
-            resolve();
-          });
-          pythonWs.once('error', reject);
-        });
-      } catch (err) {
-        console.error("Could not connect to Tangola Python Engine:", err.message);
-        return false;
-      }
+    if (isRecording) return true;
+
+    // Attempt to connect (engine may already be running)
+    try {
+      await connectToEngine();
+    } catch (err) {
+      console.error('[IPC] Could not connect to engine:', err.message);
+      return false;
     }
 
     try {
       if (meetingId) activeMeetingId = meetingId;
       if (!activeMeetingId) {
-         const meetings = getMeetings();
-         const id = Date.now().toString();
-         const newMeeting = { id, title: `Meeting ${new Date().toLocaleString()}`, date: new Date().toISOString(), transcripts: [] };
-         meetings.push(newMeeting);
-         saveMeetings(meetings);
-         activeMeetingId = id;
+        const meetings = getMeetings();
+        const id = Date.now().toString();
+        const newMeeting = {
+          id,
+          title: `Meeting ${new Date().toLocaleString()}`,
+          date: new Date().toISOString(),
+          transcripts: [],
+        };
+        meetings.push(newMeeting);
+        saveMeetings(meetings);
+        activeMeetingId = id;
       }
       const currentMeetingId = activeMeetingId;
 
       await provider.startRecording(
         (text, isFinal) => {
           if (isFinal) {
-             const meetings = getMeetings();
-             const m = meetings.find(x => x.id === currentMeetingId);
-             if (m) {
-                 m.transcripts.push({ text, final: true, id: Date.now() });
-                 saveMeetings(meetings);
-             }
+            const meetings = getMeetings();
+            const m = meetings.find(x => x.id === currentMeetingId);
+            if (m) {
+              m.transcripts.push({ text, final: true, id: Date.now() });
+              saveMeetings(meetings);
+            }
           }
-          mainWindow.webContents.send('transcript', { text, isFinal, meetingId: currentMeetingId });
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('transcript', { text, isFinal, meetingId: currentMeetingId });
+          }
         },
         (status) => {
-          mainWindow.webContents.send('provider-status', status);
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('provider-status', status);
+          }
         }
       );
+
       pythonWs.send(JSON.stringify({ action: 'start' }));
       isRecording = true;
       return true;
     } catch (e) {
-      console.error("Start recording failed", e);
+      console.error('[IPC] Start recording failed:', e);
       return false;
     }
   });
 
   ipcMain.handle('stop-capture', async () => {
-    if (!isRecording) return;
+    if (!isRecording) return true;
     if (pythonWs && pythonWs.readyState === WebSocket.OPEN) {
       pythonWs.send(JSON.stringify({ action: 'stop' }));
     }
@@ -201,28 +311,29 @@ function createWindow() {
   });
 }
 
+// ─── App lifecycle ─────────────────────────────────────────────────────────────
+app.isQuitting = false;
+
 app.whenReady().then(() => {
   startPythonEngine();
   createWindow();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
+app.on('before-quit', () => {
+  app.isQuitting = true;
+});
+
 app.on('window-all-closed', () => {
-  if (pythonProcess) {
-    pythonProcess.kill();
-  }
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  if (pythonProcess) pythonProcess.kill();
+  if (heartbeatWatchdog) clearInterval(heartbeatWatchdog);
+  if (engineRestartTimer) clearTimeout(engineRestartTimer);
+  if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('quit', () => {
-  if (pythonProcess) {
-    pythonProcess.kill();
-  }
+  if (pythonProcess) pythonProcess.kill();
 });

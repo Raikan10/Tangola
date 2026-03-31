@@ -1,5 +1,8 @@
 import sys
 import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Audio config
 SAMPLE_RATE = 16000
@@ -7,20 +10,27 @@ CHUNK_SIZE = 1024
 
 try:
     import pyaudio
+    _pyaudio_available = True
 except ImportError:
     pyaudio = None
+    _pyaudio_available = False
+    logger.warning("pyaudio not installed — Mac microphone capture unavailable.")
 
 try:
     import soundcard as sc
+    _soundcard_available = True
 except ImportError:
     sc = None
+    _soundcard_available = False
+    logger.warning("soundcard not installed — Windows WASAPI loopback unavailable.")
+
 
 class AudioAdapter:
     def __init__(self):
         self.is_recording = False
 
     def get_audio_stream(self):
-        """ yields chunks of Int16 audio data """
+        """Yields chunks of Int16 PCM audio bytes."""
         raise NotImplementedError
 
     def start(self):
@@ -31,60 +41,95 @@ class AudioAdapter:
 
 
 class WindowsAdapter(AudioAdapter):
+    """Captures system audio via WASAPI loopback (records what the speakers play)."""
+
     def __init__(self):
         super().__init__()
-        if sc is None:
-            raise ImportError("soundcard is not installed")
-        self.sc = sc
+        if not _soundcard_available:
+            raise RuntimeError(
+                "soundcard is not installed. Run: pip install soundcard\n"
+                "On Windows you may also need to install the VC++ redistributable."
+            )
 
     def get_audio_stream(self):
-        # Grab the default speaker's loopback interface
         try:
-            default_speaker = self.sc.default_speaker()
-            loopback = self.sc.get_microphone(default_speaker.id, include_loopback=True)
-        except Exception:
-            # Fallback to general loopback if the above fails
-            loopback = self.sc.all_microphones(include_loopback=True)[0]
-        
+            default_speaker = sc.default_speaker()
+            loopback = sc.get_microphone(default_speaker.id, include_loopback=True)
+            logger.info(f"[WindowsAdapter] Using WASAPI loopback: {default_speaker.name}")
+        except Exception as e:
+            logger.warning(f"[WindowsAdapter] Could not get default speaker loopback ({e}), trying first available.")
+            loopback_devices = sc.all_microphones(include_loopback=True)
+            if not loopback_devices:
+                raise RuntimeError("No WASAPI loopback device found on this system.")
+            loopback = loopback_devices[0]
+            logger.info(f"[WindowsAdapter] Using fallback loopback: {loopback.name}")
+
         with loopback.recorder(samplerate=SAMPLE_RATE, channels=1) as mic:
             while self.is_recording:
                 data = mic.record(numframes=CHUNK_SIZE)
-                # Convert Float32 to Int16
+                # soundcard returns float32 in range [-1, 1]; convert to Int16
                 audio_float = data[:, 0]
-                audio_int16 = (audio_float * 32767).astype(np.int16)
+                audio_int16 = (np.clip(audio_float, -1.0, 1.0) * 32767).astype(np.int16)
                 yield audio_int16.tobytes()
 
 
 class MacAdapter(AudioAdapter):
+    """Captures microphone input via pyaudio (CoreAudio on macOS)."""
+
     def __init__(self):
         super().__init__()
-        if pyaudio is None:
-            raise ImportError("pyaudio is not installed")
-        self.p = pyaudio.PyAudio()
+        if not _pyaudio_available:
+            raise RuntimeError(
+                "pyaudio is not installed. Run: pip install pyaudio\n"
+                "On macOS you may also need: brew install portaudio"
+            )
+        self._pa = pyaudio.PyAudio()
+        logger.info(f"[MacAdapter] pyaudio initialized. Default input: {self._get_default_device_name()}")
+
+    def _get_default_device_name(self):
+        try:
+            info = self._pa.get_default_input_device_info()
+            return info.get('name', 'Unknown')
+        except Exception:
+            return 'Unknown'
 
     def get_audio_stream(self):
-        stream = self.p.open(format=pyaudio.paInt16,
-                             channels=1,
-                             rate=SAMPLE_RATE,
-                             input=True,
-                             frames_per_buffer=CHUNK_SIZE)
-        
-        while self.is_recording:
-            try:
-                data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
-                yield data
-            except IOError:
-                continue
-        
-        stream.stop_stream()
-        stream.close()
+        stream = self._pa.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=SAMPLE_RATE,
+            input=True,
+            frames_per_buffer=CHUNK_SIZE,
+        )
+        logger.info("[MacAdapter] Audio stream opened, recording...")
+        try:
+            while self.is_recording:
+                try:
+                    data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                    yield data
+                except IOError as e:
+                    logger.warning(f"[MacAdapter] IOError during read (skipping chunk): {e}")
+                    continue
+        finally:
+            stream.stop_stream()
+            stream.close()
+            logger.info("[MacAdapter] Audio stream closed.")
+
+    def __del__(self):
+        try:
+            self._pa.terminate()
+        except Exception:
+            pass
 
 
-def get_adapter():
-    if sys.platform == "win32":
+def get_adapter() -> AudioAdapter:
+    """Returns the correct audio adapter for the current OS."""
+    if sys.platform == 'win32':
+        logger.info("Platform: Windows — using WindowsAdapter (WASAPI loopback)")
         return WindowsAdapter()
-    elif sys.platform == "darwin":
+    elif sys.platform == 'darwin':
+        logger.info("Platform: macOS — using MacAdapter (microphone)")
         return MacAdapter()
     else:
-        # Fallback to Mac adapter for linux/other
+        logger.info(f"Platform: {sys.platform} — falling back to MacAdapter")
         return MacAdapter()

@@ -10,7 +10,9 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "electron:dev": "NODE_ENV=development concurrently \"vite\" \"wait-on tcp:5173 && electron .\"",
-    "build:electron": "bun run build && electron-builder --mac --win"
+    "build:electron": "npm run build && electron-builder",
+    "build:mac": "npm run build && electron-builder --mac",
+    "build:win": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "dotenv": "^17.3.1",
@@ -51,6 +53,13 @@
     "directories": {
       "output": "dist-electron"
     },
+    "extraResources": [
+      {
+        "from": "../engine",
+        "to": "engine",
+        "filter": ["**/*", "!.venv/**", "!__pycache__/**", "!*.log", "!*.pid"]
+      }
+    ],
     "files": [
       "dist/**/*",
       "src/main-process/**/*",
