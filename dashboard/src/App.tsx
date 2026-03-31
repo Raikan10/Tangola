@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
+import toast, { Toaster } from 'react-hot-toast'
 import './index.css'
 
 declare global {
@@ -99,7 +100,10 @@ function App() {
       }
       
       const success = await window.electronAPI.startCapture(mId);
-      if (success) setIsRecording(true);
+      if (success) {
+        setIsRecording(true);
+        toast.success('Session started');
+      }
     }
   };
 
@@ -109,6 +113,7 @@ function App() {
       if (success) {
          setIsRecording(false);
          await fetchMeetings();
+         toast('Session ended', { icon: '🛑' });
       }
     }
   };
@@ -183,9 +188,9 @@ function App() {
             </div>
           ) : (
             <div className="transcript-paper">
-              {liveTranscripts.map((t, idx) => (
+              {liveTranscripts.map((t) => (
                 <div 
-                  key={t.id || idx} 
+                  key={t.id} 
                   className={`transcript-line ${!t.final ? 'partial' : ''}`}
                 >
                   {t.text}
@@ -194,6 +199,13 @@ function App() {
             </div>
           )}
         </main>
+        <Toaster position="bottom-right" toastOptions={{
+          style: {
+            background: '#1a1d23',
+            color: '#fff',
+            border: '1px solid var(--border-color)'
+          }
+        }} />
 
         <style>{`
           @keyframes pulse {

@@ -16,6 +16,7 @@
     "dotenv": "^17.3.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "react-hot-toast": "^2.6.0",
     "sarvamai": "^1.1.6",
     "ws": "^8.20.0"
   },

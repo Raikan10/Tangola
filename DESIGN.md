@@ -1,60 +1,64 @@
-# Tangola Design Doc — Stripped MVP
+# Tangola Design System
 
-## Overview
-Tangola is a high-reliability meeting transcription tool designed for the Indian professional landscape, starting with Tamil. It captures system and mic audio, streams them to an exchangeable STT/Translation provider, and generates a structured English meeting note after the session.
+## 1. Vision: "Obsidian Focus"
+Tangola is a high-reliability meeting assistant that stays out of the way. The design language is **Dark, Focused, and Precise**. We use a charcoal color palette with glassmorphic layers to provide a premium feel during business meetings.
 
-## Problem Statement
-The cognitive load of real-time translation from spoken regional languages (e.g., Tamil, Malayalam) into written English actions is the core friction point for Indian business owners.
+## 2. Brand Identity
+- **Logo Style**: 800 Weight Sans-Serif with a green gradient.
+- **Tone**: Professional, Reliable, Modern.
+- **Metaphor**: A dark room where only the essential text is illuminated.
 
-## The "Fault-Tolerant" Architecture
-To handle development on Mac and deployment on Windows, we use a **standard Electron window** (abandoning complex floating CC overlays). Initially designed with a Python Audio Engine, we've now directly integrated the official `sarvamai` JS SDK into the Electron Main Process, managing translation streaming directly in Node.js.
+## 3. Design Tokens (The "Source of Truth")
 
-### 1. Data Flow (In-Person/Virtual)
+### Colors
+| Token | Value | Use Case |
+| :--- | :--- | :--- |
+| `bg-color` | `#0b0e14` | Main application background |
+| `sidebar-bg` | `#12161f` | Navigation and sidebar |
+| `card-bg` | `#1a1f29` | List items and secondary panels |
+| `border-color`| `#2d333f` | Dividers and strokes |
+| `accent-color`| `#3fb950` | Primary actions (Start Meeting) |
+| `danger-color`| `#f85149` | Destructive actions (Stop Meeting) |
+| `text-primary`| `#e6edf3` | Headings and transcript text |
+| `text-secondary`| `#9198a1` | Metadata and secondary info |
 
-```text
-[ SOURCE: WIN SYSTEM ] [ SOURCE: MIC ]
-       |                  |
-       v                  v
-+-----------------------------------+
-|       ELECTRON APP (MAIN)         |
-+-----------------------------------+
-| - Provider Manager (Adapter)      |
-| - Sarvam JS SDK Streaming         | <--- DIRECT AUDIO PIPELINE
-| - JSON / Local Persistence        |
-+-----------------------------------+
-               |
-               v
-+-----------------------------------+
-|       ELECTRON APP (UI)           |
-+-----------------------------------+
-| - Master-Detail (Past Meetings)   |
-| - Realtime Transcript UI          |
-+-----------------------------------+
-               |
-               v
- [ LLM ] -> [ SUMMARY ] -> [ EMAIL/X ]
-```
+### Typography
+| Style | Size | Weight | Font Family |
+| :--- | :--- | :--- | :--- |
+| **Heading 1** | 24px | 800 | Inter / System Sans |
+| **Heading 2** | 20px | 700 | Inter / System Sans |
+| **Transcript** | 18px | 400 | Inter / System Sans |
+| **Metadata** | 12px | 400 | Inter / System Sans |
+| **Labels** | 11px | 600 | Inter / System Sans |
 
-### 2. Implementation Logic
-- **Audio Engine:** Handled via JavaScript direct browser/system media capture routing into the `sarvamai` Node streaming client.
-- **Provider Interface:** A generic interface to swap between STT providers (Sarvam, Groq/Whisper, GPT-4o-Audio).
-- **The "Bering Sea" Test:** Must run for 2 hours uninterrupted without the side-car crashing.
+### Spacing & Interactivity
+- **Backdrop Blur**: `12px` on fixed headers for glassmorphism.
+- **Radius**: `8px` for list items, `100px` for primary "Record" buttons.
+- **Transitions**: `0.3s cubic-bezier(0.4, 0, 0.2, 1)` for button states.
+- **Animations**: `fadeInSlide 0.4s` for new transcript arrivals.
 
-## Testing & Cross-Platform Strategy
-- **Mac (Dev):** Use `getDisplayMedia` or loopback to test the Sarvam flow.
-- **Windows (Target):** Build `.exe` via GitHub Actions for Dad's computer.
-- **Debug Mode:** Enable "WAV Dump" to debug audio quality remotely.
+## 4. Component Rules
 
-## GSTACK REVIEW REPORT
+### The Sidebar
+- Fixed `280px` width.
+- Border-right `1px` stroke.
+- Meetings sorted by most recent first.
 
-| Review | Trigger | Why | Runs | Status | Findings |
-|--------|---------|-----|------|--------|----------|
-| CEO Review | `/plan-ceo-review` | Scope Reduction | 1 | **DONE** | Stripped CC; implemented API agnosticism; prioritized fault-tolerance. |
-| Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | — |
-| Eng Review | `/plan-eng-review` | Architecture Lock-in | 1 | **DONE** | Locked WS bridge; prioritized Heartbeat; added WAV debugging. |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+### The Transcript Viewer
+- Max content width: `800px` for optimal readability.
+- Line height: `1.8` to prevent visual crowding.
+- **Partial segments**: Italicized and secondary color (`#9198a1`).
+- **Final segments**: Solid and primary color (`#e6edf3`).
 
-**VERDICT: SCOPE REDUCED & ARCHITECTURE LOCKED. Ready for implementation.**
+## 5. Implementation Status
+
+| Feature | Design Target | Code Status |
+| :--- | :--- | :--- |
+| Color Pallete | Obsidian Dark | ✅ Implemented |
+| Glassmorphism | Blur-12px | ✅ Implemented |
+| Typography | Inter UI | ✅ Implemented |
+| Transcripts | Fade-in Motion | ✅ Implemented |
+| Notifications | Hot Toast Dark | ✅ Implemented |
 
 ---
-*Created by Office Hours (YC Partner Mode) on 2026-03-30*
+*Maintained by Antigravity Design Consulting — Last Updated 2026-04-01*

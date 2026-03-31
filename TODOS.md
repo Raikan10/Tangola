@@ -19,3 +19,8 @@
     - [/] JSON transcript persistence.
     - [ ] LLM prompt engineering for "Granola-style" structured notes.
     - [ ] Basic "WAV Debug" toggle for remote troubleshooting.
+
+
+Phase two and three seem to be working very well. Our phase one does not seem to be implemented, so let's check that. Phase four looks interesting, so we can definitely try that out. All of it looks very good right now. I've committed everything. Come back and try to see how to make this work and take this to Windows also and get my dad to check it out. 
+
+try builds of other APIs too; OpenAI, Deepgram, AssemblyAI, etc. 
