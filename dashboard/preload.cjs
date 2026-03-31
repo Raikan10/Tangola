@@ -2,8 +2,11 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getStatus: () => ipcRenderer.invoke('get-status'),
-  startCapture: () => ipcRenderer.invoke('start-capture'),
+  startCapture: (meetingId) => ipcRenderer.invoke('start-capture', meetingId),
   stopCapture: () => ipcRenderer.invoke('stop-capture'),
+  getMeetings: () => ipcRenderer.invoke('get-meetings'),
+  createMeeting: (title) => ipcRenderer.invoke('create-meeting', title),
+  setActiveMeeting: (id) => ipcRenderer.invoke('set-active-meeting', id),
   onEngineStatus: (callback) => {
     const subscription = (_event, status) => callback(_event, status);
     ipcRenderer.on('engine-status', subscription);

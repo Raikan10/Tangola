@@ -7,7 +7,7 @@ Tangola is a high-reliability meeting transcription tool designed for the Indian
 The cognitive load of real-time translation from spoken regional languages (e.g., Tamil, Malayalam) into written English actions is the core friction point for Indian business owners.
 
 ## The "Fault-Tolerant" Architecture
-To handle development on Mac and deployment on Windows, we use a **standard Electron window** (abandoning complex floating CC overlays) and a **Python Audio Engine** communicating over local WebSockets.
+To handle development on Mac and deployment on Windows, we use a **standard Electron window** (abandoning complex floating CC overlays). Initially designed with a Python Audio Engine, we've now directly integrated the official `sarvamai` JS SDK into the Electron Main Process, managing translation streaming directly in Node.js.
 
 ### 1. Data Flow (In-Person/Virtual)
 
@@ -16,20 +16,19 @@ To handle development on Mac and deployment on Windows, we use a **standard Elec
        |                  |
        v                  v
 +-----------------------------------+
-|    PYTHON ENGINE (SIDECAR)        | 
-+-----------------------------------+ 
-| - WASAPI Loopback Hook (Windows)  |
-| - ScreenCaptureKit (MacOS)        | <--- HEARTBEAT (2s)
-| - Audio Resampling (to 16kHz PCM) | ---+
-| - Local WebSocket Server (ws)     |    |
-+-----------------------------------+    |
-                                         | (Audio Chunks)
-+-----------------------------------+    |
-|       ELECTRON APP (UI)           | <---+
+|       ELECTRON APP (MAIN)         |
 +-----------------------------------+
 | - Provider Manager (Adapter)      |
-| - Sarvam / Whisper / fallback     | <--- NETWORK RETRY (Exp. Backoff)
-| - SQLite / Local Persistence      |
+| - Sarvam JS SDK Streaming         | <--- DIRECT AUDIO PIPELINE
+| - JSON / Local Persistence        |
++-----------------------------------+
+               |
+               v
++-----------------------------------+
+|       ELECTRON APP (UI)           |
++-----------------------------------+
+| - Master-Detail (Past Meetings)   |
+| - Realtime Transcript UI          |
 +-----------------------------------+
                |
                v
@@ -37,7 +36,7 @@ To handle development on Mac and deployment on Windows, we use a **standard Elec
 ```
 
 ### 2. Implementation Logic
-- **Audio Engine:** `SoundCard` for Windows Loopback; `pyaudio` for Mac fallback. Sends PCM blobs over `ws`.
+- **Audio Engine:** Handled via JavaScript direct browser/system media capture routing into the `sarvamai` Node streaming client.
 - **Provider Interface:** A generic interface to swap between STT providers (Sarvam, Groq/Whisper, GPT-4o-Audio).
 - **The "Bering Sea" Test:** Must run for 2 hours uninterrupted without the side-car crashing.
 

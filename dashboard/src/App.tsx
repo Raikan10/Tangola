@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
+import './index.css'
 
 declare global {
   interface Window {
@@ -6,33 +7,48 @@ declare global {
   }
 }
 
+type Transcript = { id: number, text: string, final: boolean };
+type Meeting = { id: string, title: string, date: string, transcripts: Transcript[] };
+
 function App() {
   const [engineStatus, setEngineStatus] = useState('Disconnected');
   const [providerStatus, setProviderStatus] = useState('Disconnected');
   const [isRecording, setIsRecording] = useState(false);
-  const [transcripts, setTranscripts] = useState<{id: number, text: string, final: boolean}[]>([]);
-  const nextId = useRef(0);
+  
+  const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
+  
+  const [liveTranscripts, setLiveTranscripts] = useState<Transcript[]>([]);
+  const nextId = useRef(Date.now());
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const fetchMeetings = async () => {
+    const data = await window.electronAPI.getMeetings();
+    setMeetings(data);
+  };
 
   useEffect(() => {
-    // Poll status initially
+    fetchMeetings();
+
     window.electronAPI.getStatus().then((status: any) => {
       setEngineStatus(status.pythonConnected ? 'Connected' : 'Disconnected');
       setIsRecording(status.recording);
+      if (status.activeMeetingId) {
+         setActiveMeetingId(status.activeMeetingId);
+      }
     });
 
     const onEngineStatus = (_event: any, status: string) => setEngineStatus(status);
     const onProviderStatus = (_event: any, status: string) => setProviderStatus(status);
     
     const onTranscript = (_event: any, { text, isFinal }: { text: string, isFinal: boolean }) => {
-      setTranscripts(prev => {
+      setLiveTranscripts(prev => {
         const last = prev[prev.length - 1];
         if (last && !last.final) {
-          // Update the partial line
           const newArr = [...prev];
           newArr[newArr.length - 1] = { ...last, text, final: isFinal };
           return newArr;
         } else {
-          // Create new line
           return [...prev, { id: nextId.current++, text, final: isFinal }];
         }
       });
@@ -49,12 +65,41 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const m = meetings.find(x => x.id === activeMeetingId);
+    if (m) {
+      setLiveTranscripts(m.transcripts);
+    } else {
+      setLiveTranscripts([]);
+    }
+  }, [activeMeetingId, meetings]);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [liveTranscripts]);
+
+  const handleCreateMeeting = async () => {
+    const newMeeting = await window.electronAPI.createMeeting();
+    await fetchMeetings();
+    setActiveMeetingId(newMeeting.id);
+  };
+
   const handleStart = async () => {
     if (!isRecording) {
-      const success = await window.electronAPI.startCapture();
-      if (success) {
-        setIsRecording(true);
+      let mId = activeMeetingId;
+      if (!mId) {
+         const newMeeting = await window.electronAPI.createMeeting();
+         await fetchMeetings();
+         mId = newMeeting.id;
+         setActiveMeetingId(mId);
+      } else {
+         await window.electronAPI.setActiveMeeting(mId);
       }
+      
+      const success = await window.electronAPI.startCapture(mId);
+      if (success) setIsRecording(true);
     }
   };
 
@@ -62,56 +107,101 @@ function App() {
     if (isRecording) {
       const success = await window.electronAPI.stopCapture();
       if (success) {
-        setIsRecording(false);
+         setIsRecording(false);
+         await fetchMeetings();
       }
     }
   };
 
+  const activeMeeting = meetings.find(m => m.id === activeMeetingId);
+
   return (
-    <div style={{ padding: '20px', fontFamily: 'sans-serif', maxWidth: '600px', margin: '0 auto' }}>
-      <h1>Tangola (Sarvam STT)</h1>
-      
-      <div style={{ padding: '10px', background: '#f5f5f5', borderRadius: '8px', marginBottom: '20px' }}>
-        <div><strong>Engine:</strong> {engineStatus}</div>
-        <div><strong>Sarvam API:</strong> {providerStatus}</div>
-      </div>
-      
-      <div style={{ marginBottom: '20px' }}>
-        <button 
-          onClick={isRecording ? handleStop : handleStart}
-          style={{ 
-            padding: '12px 24px', 
-            fontSize: '16px', 
-            background: isRecording ? '#ff4d4d' : '#4caf50',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: 'pointer',
-            fontWeight: 'bold'
-          }}
-        >
-          {isRecording ? 'Stop Meeting' : 'Start Meeting'}
-        </button>
+    <div className="app-container">
+      {/* Sidebar */}
+      <div className="sidebar">
+        <div className="sidebar-header">
+          <div className="logo">Tangola.</div>
+          <button className="new-meeting-btn" onClick={handleCreateMeeting}>
+            <span>+</span> New Session
+          </button>
+        </div>
+        <div className="meeting-list">
+          {meetings.length === 0 && (
+            <div style={{ color: 'var(--text-secondary)', fontSize: '13px', textAlign: 'center', marginTop: '20px' }}>
+              No sessions yet.
+            </div>
+          )}
+          {meetings.slice().reverse().map(m => (
+            <div 
+              key={m.id} 
+              className={`meeting-item ${m.id === activeMeetingId ? 'active' : ''}`}
+              onClick={() => setActiveMeetingId(m.id)}
+            >
+              <div className="meeting-title">{m.title}</div>
+              <div className="meeting-date">{new Date(m.date).toLocaleDateString()}</div>
+            </div>
+          ))}
+        </div>
       </div>
 
-      <div style={{ 
-        height: '300px', 
-        overflowY: 'auto', 
-        border: '1px solid #ccc', 
-        padding: '10px', 
-        borderRadius: '8px',
-        background: '#fff'
-      }}>
-        {transcripts.length === 0 && <span style={{ color: '#999' }}>Meeting context will appear here...</span>}
-        {transcripts.map(t => (
-          <div key={t.id} style={{ 
-            marginBottom: '8px', 
-            color: t.final ? '#000' : '#888',
-            transition: 'color 0.2s'
-          }}>
-            {t.text}
+      {/* Main Content */}
+      <div className="main-content">
+        <header className="top-bar">
+          <div className="meeting-info">
+            <h2>{activeMeeting?.title || 'Welcome back'}</h2>
+            <div className="status-badges">
+              <span className={`badge ${engineStatus === 'Connected' ? 'connected' : ''}`}>
+                Engine: {engineStatus}
+              </span>
+              <span className={`badge ${providerStatus === 'connected' || providerStatus === 'listening' ? 'connected' : ''}`}>
+                Provider: {providerStatus}
+              </span>
+            </div>
           </div>
-        ))}
+          <button 
+            className={`record-btn ${isRecording ? 'stop' : 'start'}`}
+            onClick={isRecording ? handleStop : handleStart}
+            disabled={!activeMeetingId && isRecording}
+          >
+            <div style={{ 
+              width: '10px', 
+              height: '10px', 
+              borderRadius: '50%', 
+              backgroundColor: 'white',
+              animation: isRecording ? 'pulse 1.5s infinite' : 'none'
+            }} />
+            {isRecording ? 'Stop Session' : 'Start Session'}
+          </button>
+        </header>
+
+        <main className="transcript-container" ref={scrollRef}>
+          {liveTranscripts.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-icon">🎙️</div>
+              <h3>Ready to listen.</h3>
+              <p>Start a session to begin real-time translation.</p>
+            </div>
+          ) : (
+            <div className="transcript-paper">
+              {liveTranscripts.map((t, idx) => (
+                <div 
+                  key={t.id || idx} 
+                  className={`transcript-line ${!t.final ? 'partial' : ''}`}
+                >
+                  {t.text}
+                </div>
+              ))}
+            </div>
+          )}
+        </main>
+
+        <style>{`
+          @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.4); opacity: 0.5; }
+            100% { transform: scale(1); opacity: 1; }
+          }
+        `}</style>
       </div>
     </div>
   )
