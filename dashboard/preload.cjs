@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMeetings: () => ipcRenderer.invoke('get-meetings'),
   createMeeting: (title) => ipcRenderer.invoke('create-meeting', title),
   setActiveMeeting: (id) => ipcRenderer.invoke('set-active-meeting', id),
+  generateSummary: (meetingId) => ipcRenderer.invoke('generate-summary', meetingId),
+  setDebugWav: (enabled) => ipcRenderer.invoke('set-debug-wav', enabled),
+  setProvider: (type) => ipcRenderer.invoke('set-provider', type),
   onEngineStatus: (callback) => {
     const subscription = (_event, status) => callback(_event, status);
     ipcRenderer.on('engine-status', subscription);

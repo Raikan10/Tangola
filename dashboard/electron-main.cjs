@@ -11,7 +11,10 @@ if (fs.existsSync(dotenvPath)) {
 }
 
 const { ProviderManager } = require('./src/main-process/ProviderManager.cjs');
+const { Summarizer } = require('./src/main-process/Summarizer.cjs');
+
 const provider = new ProviderManager();
+const summarizer = new Summarizer(process.env.GEMINI_API_KEY);
 try {
   provider.initialize('sarvam', { apiKey: process.env.SARVAM_API_KEY });
 } catch (e) {
@@ -240,6 +243,54 @@ function createWindow() {
   ipcMain.handle('set-active-meeting', (event, id) => {
     activeMeetingId = id;
     return true;
+  });
+
+  ipcMain.handle('set-debug-wav', (event, enabled) => {
+    provider.setDebugWav(enabled);
+    return true;
+  });
+
+  ipcMain.handle('set-provider', (event, providerType) => {
+    try {
+      if (providerType === 'openai' && process.env.VITE_ENABLE_OPENAI !== 'true') {
+        return { success: false, error: 'OpenAI integration is currently disabled via feature flag.' };
+      }
+      const apiKey = providerType === 'openai' ? process.env.OPENAI_API_KEY : process.env.SARVAM_API_KEY;
+      if (!apiKey) return { success: false, error: `Missing ${providerType.toUpperCase()}_API_KEY` };
+      provider.initialize(providerType, { apiKey });
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('generate-summary', async (event, meetingId) => {
+    const meetings = getMeetings();
+    const m = meetings.find(x => x.id === meetingId);
+    if (!m || !m.transcripts || m.transcripts.length === 0) {
+      return { success: false, error: "No transcripts available to summarize." };
+    }
+    const fullText = m.transcripts.map(t => t.text).join(' ');
+    try {
+      const resultText = await summarizer.generateSummary(fullText);
+      let title = m.title;
+      let summaryText = resultText;
+      
+      const titleMatch = resultText.match(/^Title:\s*(.+)/i);
+      if (titleMatch) {
+        title = titleMatch[1].trim();
+        // Remove the parsed title line (and any trailing empty lines) from the summary body
+        summaryText = resultText.replace(/^Title:\s*(.+)\n*/i, '').trim();
+      }
+
+      m.title = title;
+      m.summary = summaryText;
+      saveMeetings(meetings);
+      return { success: true, summary: summaryText };
+    } catch (error) {
+      console.error('[IPC] Summarization failed:', error);
+      return { success: false, error: error.message };
+    }
   });
 
   ipcMain.handle('start-capture', async (event, meetingId) => {

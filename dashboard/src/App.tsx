@@ -1,5 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import toast, { Toaster } from 'react-hot-toast'
+import ReactMarkdown from 'react-markdown'
+import './index.css'
 import './index.css'
 
 declare global {
@@ -9,15 +11,20 @@ declare global {
 }
 
 type Transcript = { id: number, text: string, final: boolean };
-type Meeting = { id: string, title: string, date: string, transcripts: Transcript[] };
+type Meeting = { id: string, title: string, date: string, transcripts: Transcript[], summary?: string };
 
 function App() {
   const [engineStatus, setEngineStatus] = useState('Disconnected');
   const [providerStatus, setProviderStatus] = useState('Disconnected');
   const [isRecording, setIsRecording] = useState(false);
   
+  const [providerType, setProviderType] = useState<'sarvam' | 'openai'>('sarvam');
+  const [debugWav, setDebugWav] = useState(false);
+  
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'transcript' | 'summary'>('transcript');
+  const [isSummarizing, setIsSummarizing] = useState(false);
   
   const [liveTranscripts, setLiveTranscripts] = useState<Transcript[]>([]);
   const nextId = useRef(Date.now());
@@ -70,10 +77,17 @@ function App() {
     const m = meetings.find(x => x.id === activeMeetingId);
     if (m) {
       setLiveTranscripts(m.transcripts);
+      // Automatically switch to summary tab if valid summary exists when not recording
+      if (m.summary && !isRecording && activeTab === 'transcript') {
+         setActiveTab('summary');
+      } else if (!m.summary) {
+         setActiveTab('transcript');
+      }
     } else {
       setLiveTranscripts([]);
+      setActiveTab('transcript');
     }
-  }, [activeMeetingId, meetings]);
+  }, [activeMeetingId, meetings, isRecording]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -118,6 +132,41 @@ function App() {
     }
   };
 
+  const handleSummarize = async () => {
+    if (!activeMeetingId || isSummarizing) return;
+    setIsSummarizing(true);
+    toast.loading('Generating structured notes...', { id: 'summary-toast' });
+    const res = await window.electronAPI.generateSummary(activeMeetingId);
+    if (res.success) {
+      toast.success('Notes generated!', { id: 'summary-toast' });
+      await fetchMeetings();
+      setActiveTab('summary');
+    } else {
+      toast.error('Summarization failed: ' + res.error, { id: 'summary-toast' });
+    }
+    setIsSummarizing(false);
+  };
+
+  const handleProviderChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const p = e.target.value as 'sarvam' | 'openai';
+    const res = await window.electronAPI.setProvider(p);
+    if (res && res.success) {
+      setProviderType(p);
+      toast.success(`Switched to ${p === 'sarvam' ? 'Sarvam AI' : 'OpenAI Whisper'}`, { id: 'provider-switch' });
+    } else {
+      toast.error(`Provider switch failed: ${res?.error}`, { id: 'provider-switch' });
+    }
+  };
+
+  const handleDebugToggle = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const enabled = e.target.checked;
+    await window.electronAPI.setDebugWav(enabled);
+    setDebugWav(enabled);
+    if (enabled) {
+      toast('WAV Debugging enabled. Audio will be saved after session.', { icon: '🐛' });
+    }
+  };
+
   const activeMeeting = meetings.find(m => m.id === activeMeetingId);
 
   return (
@@ -154,6 +203,11 @@ function App() {
         <header className="top-bar">
           <div className="meeting-info">
             <h2>{activeMeeting?.title || 'Welcome back'}</h2>
+            {activeMeeting && (
+              <div className="meeting-subtitle">
+                 {new Date(activeMeeting.date).toLocaleString()}
+              </div>
+            )}
             <div className="status-badges">
               <span className={`badge ${engineStatus === 'Connected' ? 'connected' : ''}`}>
                 Engine: {engineStatus}
@@ -163,6 +217,22 @@ function App() {
               </span>
             </div>
           </div>
+
+          <div className="settings-controls">
+             <label className="setting-label">
+               <select value={providerType} onChange={handleProviderChange} disabled={isRecording} className="provider-select">
+                 <option value="sarvam">Sarvam AI (Streaming)</option>
+                 {import.meta.env.VITE_ENABLE_OPENAI === 'true' && (
+                   <option value="openai">OpenAI Whisper (Fallback)</option>
+                 )}
+               </select>
+             </label>
+             <label className="setting-label checkbox-label" title="Save raw PCM data as WAV file to user data folder.">
+               <input type="checkbox" checked={debugWav} onChange={handleDebugToggle} />
+               Debug WAV
+             </label>
+          </div>
+
           <button 
             className={`record-btn ${isRecording ? 'stop' : 'start'}`}
             onClick={isRecording ? handleStop : handleStart}
@@ -179,7 +249,7 @@ function App() {
           </button>
         </header>
 
-        <main className="transcript-container" ref={scrollRef}>
+        <main className="transcript-container">
           {liveTranscripts.length === 0 ? (
             <div className="empty-state">
               <div className="empty-icon">🎙️</div>
@@ -187,15 +257,59 @@ function App() {
               <p>Start a session to begin real-time translation.</p>
             </div>
           ) : (
-            <div className="transcript-paper">
-              {liveTranscripts.map((t) => (
-                <div 
-                  key={t.id} 
-                  className={`transcript-line ${!t.final ? 'partial' : ''}`}
+            <div className="transcript-area">
+              <div className="tabs">
+                <button 
+                  className={`tab-btn ${activeTab === 'transcript' ? 'active' : ''}`} 
+                  onClick={() => setActiveTab('transcript')}
                 >
-                  {t.text}
+                  Raw Transcript
+                </button>
+                <button 
+                  className={`tab-btn ${activeTab === 'summary' ? 'active' : ''}`} 
+                  onClick={() => setActiveTab('summary')}
+                  disabled={!activeMeeting?.summary && isRecording}
+                >
+                  Meeting Notes
+                </button>
+
+                {!activeMeeting?.summary && !isRecording && (
+                  <button 
+                    className="generate-btn" 
+                    onClick={handleSummarize} 
+                    disabled={isSummarizing}
+                  >
+                    {isSummarizing ? "⏳ Generating..." : "Generate Notes ✨"}
+                  </button>
+                )}
+              </div>
+
+              {activeTab === 'transcript' && (
+                <div className="transcript-paper" ref={scrollRef}>
+                  {liveTranscripts.map((t) => (
+                    <div 
+                      key={t.id} 
+                      className={`transcript-line ${!t.final ? 'partial' : ''}`}
+                    >
+                      {t.text}
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
+
+              {activeTab === 'summary' && (
+                <div className="summary-paper">
+                  {activeMeeting?.summary ? (
+                    <div className="markdown-content">
+                      <ReactMarkdown>{activeMeeting.summary}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    <div style={{ color: 'var(--text-secondary)', textAlign: 'center', marginTop: '40px' }}>
+                      No summary available yet. Click "Generate Notes" above.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </main>
