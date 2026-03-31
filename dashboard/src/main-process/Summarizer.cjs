@@ -28,9 +28,9 @@ ${transcriptsText}
 `;
 
     try {
-      // Use gemini-3.0-flash as requested
+      // Use gemini-flash-latest as requested
       const response = await this.ai.models.generateContent({
-        model: 'gemini-3.0-flash',
+        model: 'gemini-flash-latest',
         contents: prompt
       });
       return response.text;

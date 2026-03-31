@@ -83,8 +83,11 @@ function startPythonEngine() {
     if (!app.isQuitting) scheduleEngineRestart();
   });
 
-  // Give the engine 1s to boot, then start the heartbeat watchdog
-  setTimeout(startHeartbeatWatchdog, 1000);
+  // Give the engine 1s to boot, connect to it, and start the heartbeat watchdog
+  setTimeout(() => {
+    connectToEngine().catch(err => console.log('[Engine] Initial WS connect failed:', err.message));
+    startHeartbeatWatchdog();
+  }, 1000);
 }
 
 function scheduleEngineRestart() {
