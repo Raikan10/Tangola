@@ -52,14 +52,15 @@ body {
 
 .new-meeting-btn {
   width: 100%;
-  padding: 12px;
-  background-color: var(--card-bg);
-  border: 1px solid var(--border-color);
+  padding: 10px 12px;
+  background-color: transparent;
+  border: 1.5px solid var(--accent-color);
   border-radius: 8px;
-  color: var(--text-primary);
-  font-weight: 600;
+  color: var(--accent-color);
+  font-weight: 700;
+  font-size: 14px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -67,8 +68,14 @@ body {
 }
 
 .new-meeting-btn:hover {
-  background-color: var(--border-color);
-  transform: translateY(-1px);
+  background-color: rgba(63, 185, 80, 0.08);
+  border-color: var(--accent-hover);
+  color: var(--accent-hover);
+}
+
+.new-meeting-btn span {
+  font-size: 18px;
+  margin-top: -2px;
 }
 
 .meeting-list {
