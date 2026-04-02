@@ -1,5 +1,5 @@
 {
-  "name": "dashboard",
+  "name": "tangola",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -10,9 +10,13 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "electron:dev": "NODE_ENV=development concurrently \"vite\" \"wait-on tcp:5173 && electron .\"",
-    "build:electron": "npm run build && electron-builder",
-    "build:mac": "npm run build && electron-builder --mac",
-    "build:win": "npm run build && electron-builder --win"
+    "dev:engine": "npm run prepare-engine && NODE_ENV=development DEBUG_ENGINE=true concurrently \"vite\" \"wait-on tcp:5173 && electron .\"",
+    "build:electron": "npm run prepare-engine && npm run build && electron-builder",
+    "build:mac": "npm run prepare-engine && npm run build && electron-builder --mac",
+    "build:mac-dir": "npm run prepare-engine && npm run build && electron-builder --mac --dir -c.mac.identity=null",
+    "build:mac-fast": "export CSC_IDENTITY_AUTO_DISCOVERY=false && export CSC_SKIP=true && npm run prepare-engine && npm run build && electron-builder --mac",
+    "build:win": "npm run prepare-engine && npm run build && electron-builder --win",
+    "prepare-engine": "node scripts/prepare-engine.cjs"
   },
   "dependencies": {
     "@google/genai": "^1.47.0",
@@ -45,10 +49,20 @@
     "wait-on": "^9.0.4"
   },
   "build": {
+    "productName": "Tangola",
     "appId": "com.raikan10.tangola",
+    "icon": "build/icon.png",
     "mac": {
       "category": "public.app-category.productivity",
-      "target": "dmg"
+      "target": "dmg",
+      "hardenedRuntime": false,
+      "notarize": false,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Tangola needs access to your microphone to record and transcribe your meetings."
+      }
     },
     "win": {
       "target": "nsis"
@@ -58,15 +72,8 @@
     },
     "extraResources": [
       {
-        "from": "../engine",
-        "to": "engine",
-        "filter": [
-          "**/*",
-          "!.venv/**",
-          "!__pycache__/**",
-          "!*.log",
-          "!*.pid"
-        ]
+        "from": "dist-engine",
+        "to": "engine"
       }
     ],
     "files": [

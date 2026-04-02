@@ -1,11 +1,48 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, systemPreferences } = require('electron');
 const path = require('path');
 const WebSocket = require('ws');
 const fs = require('fs');
 const { spawn } = require('child_process');
 
-// Load environment variables from parent folder
-let dotenvPath = path.resolve(__dirname, '..', '.env');
+// ─── Logging Setup ─────────────────────────────────────────────────────────────
+const logsDir = path.join(app.getPath('userData'), 'logs');
+if (!fs.existsSync(logsDir)) {
+  fs.mkdirSync(logsDir, { recursive: true });
+}
+
+const mainLogPath = path.join(logsDir, 'main.log');
+const engineLogPath = path.join(logsDir, 'engine.log');
+
+const mainLogStream = fs.createWriteStream(mainLogPath, { flags: 'a' });
+const engineLogStream = fs.createWriteStream(engineLogPath, { flags: 'a' });
+
+function logToFile(msg, stream = mainLogStream) {
+  const timestamp = new Date().toISOString();
+  const formattedMsg = `[${timestamp}] ${msg}\n`;
+  stream.write(formattedMsg);
+  process.stdout.write(formattedMsg);
+}
+
+// Redirect console logs to main.log
+const originalLog = console.log;
+const originalError = console.error;
+const originalWarn = console.warn;
+
+console.log = (...args) => {
+  logToFile(args.map(a => (typeof a === 'object' ? JSON.stringify(a) : a)).join(' '));
+};
+console.error = (...args) => {
+  logToFile(`ERROR: ${args.map(a => (typeof a === 'object' ? JSON.stringify(a) : a)).join(' ')}`);
+};
+console.warn = (...args) => {
+  logToFile(`WARN: ${args.map(a => (typeof a === 'object' ? JSON.stringify(a) : a)).join(' ')}`);
+};
+
+console.log('--- App Starting ---');
+console.log(`Logs located at: ${logsDir}`);
+
+// Load environment variables from current folder
+let dotenvPath = path.resolve(__dirname, '.env');
 if (fs.existsSync(dotenvPath)) {
   require('dotenv').config({ path: dotenvPath });
 }
@@ -13,7 +50,7 @@ if (fs.existsSync(dotenvPath)) {
 const { ProviderManager } = require('./src/main-process/ProviderManager.cjs');
 const { Summarizer } = require('./src/main-process/Summarizer.cjs');
 
-const provider = new ProviderManager();
+const provider = new ProviderManager(app.getPath('userData'));
 const summarizer = new Summarizer(process.env.GEMINI_API_KEY);
 try {
   provider.initialize('sarvam', { apiKey: process.env.SARVAM_API_KEY });
@@ -35,24 +72,40 @@ let activeMeetingId = null;
 function getEnginePaths() {
   const isPackaged = app.isPackaged;
 
-  let engineDir, pythonExe;
+  let engineDir;
   if (isPackaged) {
     // electron-builder puts extraResources at process.resourcesPath/engine
     engineDir = path.join(process.resourcesPath, 'engine');
+  } else if (process.env.DEBUG_ENGINE === 'true') {
+    // Development but want to test the standalone folder
+    engineDir = path.resolve(__dirname, 'dist-engine');
   } else {
     engineDir = path.resolve(__dirname, '..', 'engine');
   }
 
-  const venvBin = process.platform === 'win32'
-    ? path.join(engineDir, '.venv', 'Scripts', 'python.exe')
-    : path.join(engineDir, '.venv', 'bin', 'python');
+  let pythonExe;
+  if (isPackaged || process.env.DEBUG_ENGINE === 'true') {
+    // In standalone distribution prepared by prepare-engine.js:
+    pythonExe = process.platform === 'win32'
+      ? path.join(engineDir, 'python', 'python.exe')
+      : path.join(engineDir, 'python', 'bin', 'python3');
+  } else {
+    // Development use local .venv
+    pythonExe = process.platform === 'win32'
+      ? path.join(engineDir, '.venv', 'Scripts', 'python.exe')
+      : path.join(engineDir, '.venv', 'bin', 'python');
+  }
 
-  return { engineDir, pythonExe: venvBin, mainPy: path.join(engineDir, 'main.py') };
+  return { engineDir, pythonExe, mainPy: path.join(engineDir, 'main.py') };
 }
 
 // ─── Engine process management ─────────────────────────────────────────────────
 function startPythonEngine() {
-  if (pythonProcess) return; // already running
+  if (pythonProcess) {
+    console.log("[Engine] Cleaning up existing Python process before restart.");
+    try { pythonProcess.kill(); } catch (e) {}
+    pythonProcess = null;
+  }
 
   const { engineDir, pythonExe, mainPy } = getEnginePaths();
   const enginePath = mainPy;
@@ -66,11 +119,18 @@ function startPythonEngine() {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  pythonProcess.stdout.on('data', (d) => process.stdout.write(`[Engine] ${d}`));
-  pythonProcess.stderr.on('data', (d) => process.stderr.write(`[Engine:ERR] ${d}`));
+  pythonProcess.stdout.on('data', (d) => {
+    const msg = d.toString();
+    logToFile(msg.trim(), engineLogStream);
+  });
+  pythonProcess.stderr.on('data', (d) => {
+    const msg = d.toString();
+    logToFile(`ERR: ${msg.trim()}`, engineLogStream);
+  });
 
   pythonProcess.on('error', (err) => {
     console.error('[Engine] Failed to start:', err);
+    logToFile(`CRITICAL ERROR: Failed to start engine: ${err}`, engineLogStream);
     pythonProcess = null;
     sendStatus('engine-dead');
     scheduleEngineRestart();
@@ -212,7 +272,12 @@ function createWindow() {
     autoHideMenuBar: true,
   });
 
-  if (process.env.NODE_ENV === 'development') {
+  ipcMain.handle('open-logs', () => {
+    shell.openPath(logsDir);
+    return true;
+  });
+
+  if (process.env.NODE_ENV === 'development' && !app.isPackaged) {
     mainWindow.loadURL('http://localhost:5173');
   } else {
     mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
@@ -241,6 +306,20 @@ function createWindow() {
     saveMeetings(meetings);
     activeMeetingId = id;
     return newMeeting;
+  });
+
+  ipcMain.handle('delete-meeting', (event, id) => {
+    let meetings = getMeetings();
+    const initialLength = meetings.length;
+    meetings = meetings.filter(m => m.id !== id);
+    if (meetings.length !== initialLength) {
+      saveMeetings(meetings);
+      if (activeMeetingId === id) {
+        activeMeetingId = null;
+      }
+      return { success: true };
+    }
+    return { success: false, error: 'Meeting not found' };
   });
 
   ipcMain.handle('set-active-meeting', (event, id) => {
@@ -355,20 +434,36 @@ function createWindow() {
   });
 
   ipcMain.handle('stop-capture', async () => {
-    if (!isRecording) return true;
-    if (pythonWs && pythonWs.readyState === WebSocket.OPEN) {
-      pythonWs.send(JSON.stringify({ action: 'stop' }));
+    try {
+      if (!isRecording) return true;
+      if (pythonWs && pythonWs.readyState === WebSocket.OPEN) {
+        pythonWs.send(JSON.stringify({ action: 'stop' }));
+      }
+      if (provider) {
+        provider.stopRecording();
+      }
+      isRecording = false;
+      return true;
+    } catch (e) {
+      console.error('[IPC] Stop recording failed:', e);
+      return false;
     }
-    provider.stopRecording();
-    isRecording = false;
-    return true;
   });
 }
 
 // ─── App lifecycle ─────────────────────────────────────────────────────────────
 app.isQuitting = false;
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  if (process.platform === 'darwin') {
+    try {
+      const granted = await systemPreferences.askForMediaAccess('microphone');
+      console.log(`[Permission] Microphone access granted: ${granted}`);
+    } catch (err) {
+      console.error('[Permission] Failed to check microphone access:', err);
+    }
+  }
+
   startPythonEngine();
   createWindow();
 

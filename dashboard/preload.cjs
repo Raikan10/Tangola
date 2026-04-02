@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   generateSummary: (meetingId) => ipcRenderer.invoke('generate-summary', meetingId),
   setDebugWav: (enabled) => ipcRenderer.invoke('set-debug-wav', enabled),
   setProvider: (type) => ipcRenderer.invoke('set-provider', type),
+  deleteMeeting: (id) => ipcRenderer.invoke('delete-meeting', id),
+  openLogs: () => ipcRenderer.invoke('open-logs'),
   onEngineStatus: (callback) => {
     const subscription = (_event, status) => callback(_event, status);
     ipcRenderer.on('engine-status', subscription);

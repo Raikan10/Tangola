@@ -167,6 +167,24 @@ function App() {
     }
   };
 
+  const handleOpenLogs = async () => {
+    await window.electronAPI.openLogs();
+  };
+
+  const handleDeleteMeeting = async (id: string) => {
+    if (!window.confirm('Are you sure you want to delete this session?')) return;
+    const res = await window.electronAPI.deleteMeeting(id);
+    if (res.success) {
+      toast.success('Session deleted');
+      await fetchMeetings();
+      if (activeMeetingId === id) {
+        setActiveMeetingId(null);
+      }
+    } else {
+      toast.error('Failed to delete: ' + res.error);
+    }
+  };
+
   const activeMeeting = meetings.find(m => m.id === activeMeetingId);
 
   return (
@@ -175,9 +193,29 @@ function App() {
       <div className="sidebar">
         <div className="sidebar-header">
           <div className="logo">Tangola.</div>
-          <button className="new-meeting-btn" onClick={handleCreateMeeting}>
-            <span>+</span> New Session
-          </button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
+            <button className="new-meeting-btn" onClick={handleCreateMeeting}>
+              <span>+</span> New Session
+            </button>
+            <button 
+              onClick={handleOpenLogs}
+              style={{
+                background: 'transparent',
+                border: '1px solid var(--border-color)',
+                color: 'var(--text-secondary)',
+                padding: '8px',
+                borderRadius: '8px',
+                fontSize: '12px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px'
+              }}
+            >
+              <span>📁</span> Show Internal Logs
+            </button>
+          </div>
         </div>
         <div className="meeting-list">
           {meetings.length === 0 && (
@@ -191,8 +229,20 @@ function App() {
               className={`meeting-item ${m.id === activeMeetingId ? 'active' : ''}`}
               onClick={() => setActiveMeetingId(m.id)}
             >
-              <div className="meeting-title">{m.title}</div>
-              <div className="meeting-date">{new Date(m.date).toLocaleDateString()}</div>
+              <div className="meeting-content">
+                <div className="meeting-title">{m.title}</div>
+                <div className="meeting-date">{new Date(m.date).toLocaleDateString()}</div>
+              </div>
+              <button 
+                className="delete-meeting-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDeleteMeeting(m.id);
+                }}
+                disabled={isRecording && m.id === activeMeetingId}
+              >
+                ✕
+              </button>
             </div>
           ))}
         </div>

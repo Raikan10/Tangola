@@ -182,10 +182,11 @@ class OpenAIProvider extends STTProvider {
 }
 
 class ProviderManager {
-  constructor() {
+  constructor(userDataPath) {
     this.provider = null;
     this.debugWav = false;
     this.debugBuffer = Buffer.alloc(0);
+    this.userDataPath = userDataPath || os.homedir();
   }
 
   setDebugWav(enabled) {
@@ -216,7 +217,7 @@ class ProviderManager {
     }
     
     if (this.debugWav && this.debugBuffer.length > 0) {
-      const debugFile = path.join(app ? app.getPath('userData') : os.homedir(), `tangola_debug_${Date.now()}.wav`);
+      const debugFile = path.join(this.userDataPath, `tangola_debug_${Date.now()}.wav`);
       createWavFile(this.debugBuffer, debugFile);
       console.log(`[Provider] Saved debug WAV to ${debugFile}`);
       this.debugBuffer = Buffer.alloc(0);
