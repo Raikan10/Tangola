@@ -1,7 +1,9 @@
 {
   "name": "tangola",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0-beta.1",
+  "author": "raikan10",
+  "description": "Tangola: Intelligent meeting assistant for Tamil transcription and automatic English translation. Effortlessly record and summarize your Tamil meetings into English in real-time.",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
@@ -15,7 +17,7 @@
     "build:mac": "npm run prepare-engine && npm run build && electron-builder --mac",
     "build:mac-dir": "npm run prepare-engine && npm run build && electron-builder --mac --dir -c.mac.identity=null",
     "build:mac-fast": "export CSC_IDENTITY_AUTO_DISCOVERY=false && export CSC_SKIP=true && npm run prepare-engine && npm run build && electron-builder --mac",
-    "build:win": "npm run prepare-engine && npm run build && electron-builder --win",
+    "build:win": "npm run prepare-engine -- win32 x64 && npm run build && electron-builder --win --x64",
     "prepare-engine": "node scripts/prepare-engine.cjs"
   },
   "dependencies": {
@@ -66,6 +68,12 @@
     },
     "win": {
       "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "Tangola",
+      "artifactName": "${productName} Setup ${version}.${ext}"
     },
     "directories": {
       "output": "dist-electron"

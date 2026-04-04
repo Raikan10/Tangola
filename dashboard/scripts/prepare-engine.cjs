@@ -36,10 +36,8 @@ async function downloadFile(url, dest) {
   });
 }
 
-async function prepareEngine() {
-  const platform = process.platform;
-  const arch = process.arch;
-  const key = `${platform}-${arch === 'arm64' ? 'arm64' : 'x64'}`;
+async function prepareEngine(targetPlatform = process.platform, targetArch = process.arch) {
+  const key = `${targetPlatform}-${targetArch === 'arm64' ? 'arm64' : 'x64'}`;
   const url = URLS[key];
 
   if (!url) {
@@ -52,7 +50,7 @@ async function prepareEngine() {
   const pythonDir = path.resolve(distEngine, 'python');
   const archive = path.resolve(projectRoot, `python-${key}.tar.gz`);
 
-  console.log(`[PrepareEngine] Target: ${key}`);
+  console.log(`[PrepareEngine] Target: ${key} (Host: ${process.platform})`);
   console.log(`[PrepareEngine] Engine Source: ${engineSrc}`);
   console.log(`[PrepareEngine] Output: ${distEngine}`);
 
@@ -70,18 +68,13 @@ async function prepareEngine() {
   }
 
   console.log('[PrepareEngine] Extracting Python...');
-  if (platform === 'win32') {
-    // Windows: Use tar (if available) or a library. Modern Windows has tar.
-    execSync(`tar -xzf "${archive}" -C "${distEngine}"`);
-  } else {
-    execSync(`tar -xzf "${archive}" -C "${distEngine}"`);
-  }
+  // Force extraction into dist-engine
+  execSync(`tar -xzf "${archive}" -C "${distEngine}"`);
 
-  // Rename the extracted 'python' directory to 'python' inside dist-engine if it extracts as something else
-  // python-build-standalone usually extracts as 'python'
-  if (!fs.existsSync(pythonDir) && fs.existsSync(path.resolve(distEngine, 'python'))) {
-    // Already correct
-  }
+  // python-build-standalone usually extracts into a 'python' folder
+  // If it extracts into something else, we might need to find it and rename it.
+  // But usually it's 'python/install/...' or just 'python/...'
+  // In our case, the tarball from indygreg extracts a 'python' directory.
 
   // 3. Copy Engine scripts
   console.log('[PrepareEngine] Copying engine scripts...');
@@ -94,41 +87,69 @@ async function prepareEngine() {
   });
 
   // 4. Install requirements
-  console.log('[PrepareEngine] Installing dependencies into standalone Python...');
-  const pythonBin = platform === 'win32' 
-    ? path.join(pythonDir, 'python.exe')
-    : path.join(pythonDir, 'bin', 'python3');
+  console.log('[PrepareEngine] Installing dependencies...');
+  
+  const isCrossCompiling = targetPlatform !== process.platform;
+  const deps = ["numpy>=2.0.0", "pyaudio>=0.2.14", "soundcard>=0.4.5", "websockets>=13.0"];
 
-  // We upgrade pip and install requirements
-  // Note: we use our engine source to find the requirements
-  try {
-    execSync(`"${pythonBin}" -m pip install --upgrade pip`, { stdio: 'inherit' });
-    const deps = ["numpy>=2.4.4", "pyaudio>=0.2.14", "soundcard>=0.4.5", "websockets>=16.0"];
-    console.log(`[PrepareEngine] Installing: ${deps.join(' ')}`);
-    execSync(`"${pythonBin}" -m pip install ${deps.map(d => `"${d}"`).join(' ')}`, { stdio: 'inherit' });
-    console.log('[PrepareEngine] Dependencies installed successfully.');
+  if (isCrossCompiling) {
+    console.log(`[PrepareEngine] Cross-compiling detected (Host:${process.platform} -> Target:${targetPlatform})`);
+    console.log(`[PrepareEngine] Using 'pip install --platform' to download ${targetPlatform} wheels...`);
     
-    // Apple Silicon / Intel - Ensure native portaudio libs are bundled
-    if (platform === 'darwin') {
-      console.log('[PrepareEngine] Bundling native dylibs for portability...');
-      const libPath = path.join(pythonDir, 'lib');
-      // Search for libportaudio (usually in brew path on dev machine)
-      const possibleBrewPaths = ['/opt/homebrew/lib/libportaudio.2.dylib', '/usr/local/lib/libportaudio.2.dylib'];
-      for (const p of possibleBrewPaths) {
-        if (fs.existsSync(p)) {
-          console.log(`[PrepareEngine] Found native lib at ${p}, copying...`);
-          fs.copyFileSync(p, path.join(libPath, 'libportaudio.2.dylib'));
-          break;
-        }
-      }
+    // For cross-compiling, we use the HOST's python/pip to download wheels into the target's site-packages
+    const pipPlatform = targetPlatform === 'win32' ? 'win_amd64' : (targetPlatform === 'darwin' ? (targetArch === 'arm64' ? 'macosx_11_0_arm64' : 'macosx_10_9_x86_64') : 'manylinux2014_x86_64');
+    
+    // We need to find the site-packages directory in the target python distribution
+    let sitePackages;
+    if (targetPlatform === 'win32') {
+      sitePackages = path.join(pythonDir, 'Lib', 'site-packages');
+    } else {
+      // For Linux/Mac standalone, it's usually lib/python3.11/site-packages
+      const libDir = path.join(pythonDir, 'lib');
+      const pythonLibDir = fs.readdirSync(libDir).find(d => d.startsWith('python3.'));
+      sitePackages = path.join(libDir, pythonLibDir, 'site-packages');
     }
-  } catch (err) {
-    console.error('[PrepareEngine] Failed to install dependencies:', err.message);
-    throw err;
+
+    if (!fs.existsSync(sitePackages)) {
+      fs.mkdirSync(sitePackages, { recursive: true });
+    }
+
+    const pipCmd = `python3 -m pip install --target "${sitePackages}" --platform ${pipPlatform} --only-binary=:all: --python-version 3.11 --upgrade ${deps.join(' ')}`;
+    console.log(`[PrepareEngine] Running: ${pipCmd}`);
+    execSync(pipCmd, { stdio: 'inherit' });
+
+  } else {
+    // Normal installation using the target python (which is also the host python)
+    const pythonBin = targetPlatform === 'win32' 
+      ? path.join(pythonDir, 'python.exe')
+      : path.join(pythonDir, 'bin', 'python3');
+
+    try {
+      execSync(`"${pythonBin}" -m pip install --upgrade pip`, { stdio: 'inherit' });
+      console.log(`[PrepareEngine] Installing: ${deps.join(' ')}`);
+      execSync(`"${pythonBin}" -m pip install ${deps.map(d => `"${d}"`).join(' ')}`, { stdio: 'inherit' });
+    } catch (err) {
+      console.error('[PrepareEngine] Failed to install dependencies:', err.message);
+      throw err;
+    }
   }
 
-  // 5. Hardened signing cleanup (Remove .pyc, __pycache__, and tests to avoid "Timestamp expected" errors)
-  console.log('[PrepareEngine] Stripping __pycache__, tests, and bytecode for faster signing...');
+  // Apple Silicon / Intel - Ensure native portaudio libs are bundled
+  if (targetPlatform === 'darwin') {
+    console.log('[PrepareEngine] Bundling native dylibs for portability...');
+    const libPath = path.join(pythonDir, 'lib');
+    const possibleBrewPaths = ['/opt/homebrew/lib/libportaudio.2.dylib', '/usr/local/lib/libportaudio.2.dylib'];
+    for (const p of possibleBrewPaths) {
+      if (fs.existsSync(p)) {
+        console.log(`[PrepareEngine] Found native lib at ${p}, copying...`);
+        fs.copyFileSync(p, path.join(libPath, 'libportaudio.2.dylib'));
+        break;
+      }
+    }
+  }
+
+  // 5. Hardened signing cleanup
+  console.log('[PrepareEngine] Stripping __pycache__, tests, and bytecode...');
   const stripEngine = (dir) => {
     if (!fs.existsSync(dir)) return;
     const files = fs.readdirSync(dir);
@@ -145,20 +166,20 @@ async function prepareEngine() {
         } else if (file.endsWith('.pyc') || file.endsWith('.pyo')) {
           fs.unlinkSync(fullPath);
         }
-      } catch (e) {
-        // Ignore errors for symlinks or permission issues during cleanup
-      }
+      } catch (e) {}
     });
   };
   stripEngine(distEngine);
 
-  // 6. Cleanup
-  console.log('[PrepareEngine] Finalizing...');
-
   console.log('[PrepareEngine] DONE! Standalone engine is ready in dist-engine/');
 }
 
-prepareEngine().catch(err => {
+// Parse arguments: node prepare-engine.cjs [platform] [arch]
+const args = process.argv.slice(2);
+const targetPlatform = args[0] || process.platform;
+const targetArch = args[1] || (targetPlatform === 'win32' ? 'x64' : process.arch);
+
+prepareEngine(targetPlatform, targetArch).catch(err => {
   console.error('[PrepareEngine] FAILED:', err);
   process.exit(1);
 });

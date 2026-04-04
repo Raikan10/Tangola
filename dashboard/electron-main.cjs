@@ -113,11 +113,15 @@ function startPythonEngine() {
 
   console.log(`[Engine] dir=${engineDir}`);
   console.log(`[Engine] Starting: ${pythonPath} ${enginePath}`);
+  logToFile(`[Engine] Spawning: "${pythonPath}" "${enginePath}"`, engineLogStream);
 
-  pythonProcess = spawn(pythonPath, [enginePath], {
+  const spawnOptions = {
     cwd: path.dirname(enginePath),
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+    windowsHide: true,
+  };
+
+  pythonProcess = spawn(pythonPath, [enginePath], spawnOptions);
 
   pythonProcess.stdout.on('data', (d) => {
     const msg = d.toString();
@@ -455,6 +459,19 @@ function createWindow() {
 app.isQuitting = false;
 
 app.whenReady().then(async () => {
+  if (process.platform === 'win32') {
+    app.setAppUserModelId('com.raikan10.tangola');
+  }
+  
+  if (process.platform === 'win32') {
+    try {
+      const status = systemPreferences.getMediaAccessStatus('microphone');
+      console.log(`[Permission] Windows Microphone status: ${status}`);
+    } catch (err) {
+      console.error('[Permission] Failed to check Windows microphone status:', err);
+    }
+  }
+
   if (process.platform === 'darwin') {
     try {
       const granted = await systemPreferences.askForMediaAccess('microphone');
