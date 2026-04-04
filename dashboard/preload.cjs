@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setProvider: (type) => ipcRenderer.invoke('set-provider', type),
   deleteMeeting: (id) => ipcRenderer.invoke('delete-meeting', id),
   openLogs: () => ipcRenderer.invoke('open-logs'),
+  getSettings: () => ipcRenderer.invoke('get-settings'),
+  saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
   onEngineStatus: (callback) => {
     const subscription = (_event, status) => callback(_event, status);
     ipcRenderer.on('engine-status', subscription);

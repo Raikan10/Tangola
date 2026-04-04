@@ -41,19 +41,46 @@ console.warn = (...args) => {
 console.log('--- App Starting ---');
 console.log(`Logs located at: ${logsDir}`);
 
-// Load environment variables from current folder
-let dotenvPath = path.resolve(__dirname, '.env');
-if (fs.existsSync(dotenvPath)) {
-  require('dotenv').config({ path: dotenvPath });
+// ─── Settings persistence ────────────────────────────────────────────────────────
+function getSettingsFile() {
+  return path.join(app.getPath('userData'), 'settings.json');
+}
+
+function getSettings() {
+  try {
+    if (fs.existsSync(getSettingsFile())) {
+      return JSON.parse(fs.readFileSync(getSettingsFile(), 'utf-8'));
+    }
+  } catch (e) {
+    console.error("Error reading settings:", e);
+  }
+  return {
+    sarvamApiKey: '',
+    geminiApiKey: '',
+    openaiApiKey: '',
+    defaultSummarizer: 'gemini'
+  };
+}
+
+function saveSettings(settings) {
+  try {
+    fs.writeFileSync(getSettingsFile(), JSON.stringify(settings, null, 2));
+  } catch (e) {
+    console.error("Error saving settings:", e);
+  }
 }
 
 const { ProviderManager } = require('./src/main-process/ProviderManager.cjs');
 const { Summarizer } = require('./src/main-process/Summarizer.cjs');
 
+const initialSettings = getSettings();
 const provider = new ProviderManager(app.getPath('userData'));
-const summarizer = new Summarizer(process.env.GEMINI_API_KEY);
+const summarizer = new Summarizer(initialSettings);
+
 try {
-  provider.initialize('sarvam', { apiKey: process.env.SARVAM_API_KEY });
+  if (initialSettings.sarvamApiKey) {
+    provider.initialize('sarvam', { apiKey: initialSettings.sarvamApiKey });
+  }
 } catch (e) {
   console.warn("Failed to initialize Sarvam Provider: ", e.message);
 }
@@ -295,6 +322,21 @@ function createWindow() {
     activeMeetingId,
   }));
 
+  ipcMain.handle('get-settings', () => getSettings());
+  ipcMain.handle('save-settings', (event, newSettings) => {
+    saveSettings(newSettings);
+    // Re-initialize things dynamically
+    summarizer.updateSettings(newSettings);
+    if (newSettings.sarvamApiKey) {
+      try {
+        provider.initialize('sarvam', { apiKey: newSettings.sarvamApiKey });
+      } catch (e) {
+        console.warn("Could not re-init Sarvam provider on settings save");
+      }
+    }
+    return { success: true };
+  });
+
   ipcMain.handle('get-meetings', () => getMeetings());
 
   ipcMain.handle('create-meeting', (event, title) => {
@@ -338,11 +380,9 @@ function createWindow() {
 
   ipcMain.handle('set-provider', (event, providerType) => {
     try {
-      if (providerType === 'openai' && process.env.VITE_ENABLE_OPENAI !== 'true') {
-        return { success: false, error: 'OpenAI integration is currently disabled via feature flag.' };
-      }
-      const apiKey = providerType === 'openai' ? process.env.OPENAI_API_KEY : process.env.SARVAM_API_KEY;
-      if (!apiKey) return { success: false, error: `Missing ${providerType.toUpperCase()}_API_KEY` };
+      const currentSettings = getSettings();
+      const apiKey = providerType === 'openai' ? currentSettings.openaiApiKey : currentSettings.sarvamApiKey;
+      if (!apiKey) return { success: false, error: `Missing API key for ${providerType}` };
       provider.initialize(providerType, { apiKey });
       return { success: true };
     } catch (e) {

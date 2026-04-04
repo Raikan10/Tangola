@@ -2,7 +2,6 @@ import { useEffect, useState, useRef } from 'react'
 import toast, { Toaster } from 'react-hot-toast'
 import ReactMarkdown from 'react-markdown'
 import './index.css'
-import './index.css'
 
 declare global {
   interface Window {
@@ -13,13 +12,23 @@ declare global {
 type Transcript = { id: number, text: string, final: boolean };
 type Meeting = { id: string, title: string, date: string, transcripts: Transcript[], summary?: string };
 
+type Settings = {
+  sarvamApiKey: string;
+  geminiApiKey: string;
+  openaiApiKey: string;
+  defaultSummarizer: 'gemini' | 'openai';
+};
+
 function App() {
   const [engineStatus, setEngineStatus] = useState('Disconnected');
   const [providerStatus, setProviderStatus] = useState('Disconnected');
   const [isRecording, setIsRecording] = useState(false);
   
-  const [providerType, setProviderType] = useState<'sarvam' | 'openai'>('sarvam');
   const [debugWav, setDebugWav] = useState(false);
+  const [settings, setSettings] = useState<Settings>({
+    sarvamApiKey: '', geminiApiKey: '', openaiApiKey: '', defaultSummarizer: 'gemini'
+  });
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
@@ -29,6 +38,7 @@ function App() {
   const [liveTranscripts, setLiveTranscripts] = useState<Transcript[]>([]);
   const nextId = useRef(Date.now());
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollLocked, setScrollLocked] = useState(true);
 
   const fetchMeetings = async () => {
     const data = await window.electronAPI.getMeetings();
@@ -37,6 +47,8 @@ function App() {
 
   useEffect(() => {
     fetchMeetings();
+
+    window.electronAPI.getSettings().then((s: Settings) => setSettings(s));
 
     window.electronAPI.getStatus().then((status: any) => {
       setEngineStatus(status.pythonConnected ? 'Connected' : 'Disconnected');
@@ -77,7 +89,6 @@ function App() {
     const m = meetings.find(x => x.id === activeMeetingId);
     if (m) {
       setLiveTranscripts(m.transcripts);
-      // Automatically switch to summary tab if valid summary exists when not recording
       if (m.summary && !isRecording && activeTab === 'transcript') {
          setActiveTab('summary');
       } else if (!m.summary) {
@@ -90,10 +101,22 @@ function App() {
   }, [activeMeetingId, meetings, isRecording]);
 
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollLocked && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [liveTranscripts]);
+  }, [liveTranscripts, scrollLocked]);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+    const isAtBottom = scrollHeight - scrollTop - clientHeight < 10;
+    setScrollLocked(isAtBottom);
+  };
+
+  const handleSaveSettings = async () => {
+    await window.electronAPI.saveSettings(settings);
+    setIsSettingsOpen(false);
+    toast.success('Settings saved successfully!');
+  };
 
   const handleCreateMeeting = async () => {
     const newMeeting = await window.electronAPI.createMeeting();
@@ -101,33 +124,25 @@ function App() {
     setActiveMeetingId(newMeeting.id);
   };
 
-  const handleStart = async () => {
-    if (!isRecording) {
-      let mId = activeMeetingId;
-      if (!mId) {
-         const newMeeting = await window.electronAPI.createMeeting();
-         await fetchMeetings();
-         mId = newMeeting.id;
-         setActiveMeetingId(mId);
-      } else {
-         await window.electronAPI.setActiveMeeting(mId);
-      }
-      
-      const success = await window.electronAPI.startCapture(mId);
+  const handleStartSession = async () => {
+    if (!isRecording && activeMeetingId) {
+      await window.electronAPI.setActiveMeeting(activeMeetingId);
+      const success = await window.electronAPI.startCapture(activeMeetingId);
       if (success) {
         setIsRecording(true);
-        toast.success('Session started');
+        toast.success('Recording started');
+        setScrollLocked(true);
       }
     }
   };
 
-  const handleStop = async () => {
+  const handleStopSession = async () => {
     if (isRecording) {
       const success = await window.electronAPI.stopCapture();
       if (success) {
          setIsRecording(false);
          await fetchMeetings();
-         toast('Session ended', { icon: '🛑' });
+         toast('Recording paused', { icon: '⏸️' });
       }
     }
   };
@@ -147,23 +162,12 @@ function App() {
     setIsSummarizing(false);
   };
 
-  const handleProviderChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const p = e.target.value as 'sarvam' | 'openai';
-    const res = await window.electronAPI.setProvider(p);
-    if (res && res.success) {
-      setProviderType(p);
-      toast.success(`Switched to ${p === 'sarvam' ? 'Sarvam AI' : 'OpenAI Whisper'}`, { id: 'provider-switch' });
-    } else {
-      toast.error(`Provider switch failed: ${res?.error}`, { id: 'provider-switch' });
-    }
-  };
-
   const handleDebugToggle = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const enabled = e.target.checked;
     await window.electronAPI.setDebugWav(enabled);
     setDebugWav(enabled);
     if (enabled) {
-      toast('WAV Debugging enabled. Audio will be saved after session.', { icon: '🐛' });
+      toast('WAV Debugging enabled.', { icon: '🐛' });
     }
   };
 
@@ -175,7 +179,7 @@ function App() {
     if (!window.confirm('Are you sure you want to delete this session?')) return;
     const res = await window.electronAPI.deleteMeeting(id);
     if (res.success) {
-      toast.success('Session deleted');
+      toast.success('Meeting deleted');
       await fetchMeetings();
       if (activeMeetingId === id) {
         setActiveMeetingId(null);
@@ -195,32 +199,38 @@ function App() {
           <div className="logo">Tangola.</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
             <button className="new-meeting-btn" onClick={handleCreateMeeting}>
-              <span>+</span> New Session
+              <span>+</span> New Meeting
             </button>
-            <button 
-              onClick={handleOpenLogs}
-              style={{
-                background: 'transparent',
-                border: '1px solid var(--border-color)',
-                color: 'var(--text-secondary)',
-                padding: '8px',
-                borderRadius: '8px',
-                fontSize: '12px',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '6px'
-              }}
-            >
-              <span>📁</span> Show Internal Logs
-            </button>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button 
+                onClick={() => setIsSettingsOpen(true)}
+                style={{
+                  flex: 1,
+                  background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-secondary)',
+                  padding: '8px', borderRadius: '8px', fontSize: '12px', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px'
+                }}
+              >
+                <span>⚙️</span> Settings
+              </button>
+              <button 
+                onClick={handleOpenLogs}
+                style={{
+                  flex: 1,
+                  background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-secondary)',
+                  padding: '8px', borderRadius: '8px', fontSize: '12px', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px'
+                }}
+              >
+                <span>📁</span> Logs
+              </button>
+            </div>
           </div>
         </div>
         <div className="meeting-list">
           {meetings.length === 0 && (
             <div style={{ color: 'var(--text-secondary)', fontSize: '13px', textAlign: 'center', marginTop: '20px' }}>
-              No sessions yet.
+              No meetings yet.
             </div>
           )}
           {meetings.slice().reverse().map(m => (
@@ -259,52 +269,47 @@ function App() {
               </div>
             )}
             <div className="status-badges">
-              <span className={`badge ${engineStatus === 'Connected' ? 'connected' : ''}`}>
+              <span className={`badge ${engineStatus === 'Connected' ? 'connected' : ''}`} title="Python Engine Connection">
                 Engine: {engineStatus}
               </span>
-              <span className={`badge ${providerStatus === 'connected' || providerStatus === 'listening' ? 'connected' : ''}`}>
+              <span className={`badge ${providerStatus === 'connected' || providerStatus === 'listening' ? 'connected' : ''}`} title="Audio Provider Streaming">
                 Provider: {providerStatus}
               </span>
             </div>
           </div>
 
           <div className="settings-controls">
-             <label className="setting-label">
-               <select value={providerType} onChange={handleProviderChange} disabled={isRecording} className="provider-select">
-                 <option value="sarvam">Sarvam AI (Streaming)</option>
-                 {import.meta.env.VITE_ENABLE_OPENAI === 'true' && (
-                   <option value="openai">OpenAI Whisper (Fallback)</option>
-                 )}
-               </select>
-             </label>
              <label className="setting-label checkbox-label" title="Save raw PCM data as WAV file to user data folder.">
                <input type="checkbox" checked={debugWav} onChange={handleDebugToggle} />
                Debug WAV
              </label>
+             {activeMeetingId && (
+               <button 
+                 className={`record-btn ${isRecording ? 'stop' : 'start'}`}
+                 onClick={isRecording ? handleStopSession : handleStartSession}
+               >
+                 <div style={{ 
+                   width: '10px', height: '10px', borderRadius: '50%', backgroundColor: 'white',
+                   animation: isRecording ? 'pulse 1.5s infinite' : 'none'
+                 }} />
+                 {isRecording ? 'Stop Session' : 'Start Session'}
+               </button>
+             )}
           </div>
-
-          <button 
-            className={`record-btn ${isRecording ? 'stop' : 'start'}`}
-            onClick={isRecording ? handleStop : handleStart}
-            disabled={!activeMeetingId && isRecording}
-          >
-            <div style={{ 
-              width: '10px', 
-              height: '10px', 
-              borderRadius: '50%', 
-              backgroundColor: 'white',
-              animation: isRecording ? 'pulse 1.5s infinite' : 'none'
-            }} />
-            {isRecording ? 'Stop Session' : 'Start Session'}
-          </button>
         </header>
 
         <main className="transcript-container">
-          {liveTranscripts.length === 0 ? (
+          {!activeMeetingId ? (
             <div className="empty-state">
+              <div className="empty-icon">📝</div>
+              <h3>Select or create a meeting.</h3>
+              <p>Click "New Meeting" in the sidebar to get started.</p>
+            </div>
+          ) : liveTranscripts.length === 0 && !isRecording ? (
+            <div className="empty-state" style={{opacity: 0.8}}>
               <div className="empty-icon">🎙️</div>
               <h3>Ready to listen.</h3>
-              <p>Start a session to begin real-time translation.</p>
+              <p>Click "Start Session" above to begin real-time translation.</p>
             </div>
           ) : (
             <div className="transcript-area">
@@ -313,7 +318,7 @@ function App() {
                   className={`tab-btn ${activeTab === 'transcript' ? 'active' : ''}`} 
                   onClick={() => setActiveTab('transcript')}
                 >
-                  Raw Transcript
+                  Transcript {!scrollLocked && ' (Scroll Paused)'}
                 </button>
                 <button 
                   className={`tab-btn ${activeTab === 'summary' ? 'active' : ''}`} 
@@ -323,7 +328,7 @@ function App() {
                   Meeting Notes
                 </button>
 
-                {!activeMeeting?.summary && !isRecording && (
+                {!activeMeeting?.summary && !isRecording && liveTranscripts.length > 0 && (
                   <button 
                     className="generate-btn" 
                     onClick={handleSummarize} 
@@ -335,15 +340,13 @@ function App() {
               </div>
 
               {activeTab === 'transcript' && (
-                <div className="transcript-paper" ref={scrollRef}>
+                <div className="transcript-paper" ref={scrollRef} onScroll={handleScroll}>
                   {liveTranscripts.map((t) => (
-                    <div 
-                      key={t.id} 
-                      className={`transcript-line ${!t.final ? 'partial' : ''}`}
-                    >
+                    <div key={t.id} className={`transcript-line ${!t.final ? 'partial' : ''}`}>
                       {t.text}
                     </div>
                   ))}
+                  {isRecording && <div style={{ height: '40px' }} />}
                 </div>
               )}
 
@@ -363,11 +366,69 @@ function App() {
             </div>
           )}
         </main>
+        
+        {/* Settings Modal */}
+        {isSettingsOpen && (
+          <div className="modal-overlay" onClick={() => setIsSettingsOpen(false)}>
+            <div className="modal-content" onClick={e => e.stopPropagation()}>
+              <h3>API Provider Settings</h3>
+              
+              <div className="settings-group">
+                <label>Sarvam API Key (Live Translation)</label>
+                <input 
+                  type="password" 
+                  className="settings-input" 
+                  value={settings.sarvamApiKey} 
+                  onChange={e => setSettings({...settings, sarvamApiKey: e.target.value})} 
+                  placeholder="sk-sarvam-..." 
+                />
+              </div>
+
+              <div className="settings-group" style={{marginTop: '24px'}}>
+                <label>Primary Summarizer</label>
+                <select 
+                  className="settings-select"
+                  value={settings.defaultSummarizer}
+                  onChange={e => setSettings({...settings, defaultSummarizer: e.target.value as 'gemini' | 'openai'})}
+                >
+                  <option value="gemini">Google Gemini (Flash)</option>
+                  <option value="openai">OpenAI (GPT-4o-mini)</option>
+                </select>
+              </div>
+
+              <div className="settings-group">
+                <label>Gemini API Key</label>
+                <input 
+                  type="password" 
+                  className="settings-input" 
+                  value={settings.geminiApiKey} 
+                  onChange={e => setSettings({...settings, geminiApiKey: e.target.value})} 
+                  placeholder="AIzaSy..." 
+                />
+              </div>
+
+              <div className="settings-group">
+                <label>OpenAI API Key (Fallback)</label>
+                <input 
+                  type="password" 
+                  className="settings-input" 
+                  value={settings.openaiApiKey} 
+                  onChange={e => setSettings({...settings, openaiApiKey: e.target.value})} 
+                  placeholder="sk-proj-..." 
+                />
+              </div>
+
+              <div className="modal-actions">
+                <button className="btn-secondary" onClick={() => setIsSettingsOpen(false)}>Cancel</button>
+                <button className="btn-primary" onClick={handleSaveSettings}>Save Settings</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <Toaster position="bottom-right" toastOptions={{
           style: {
-            background: '#1a1d23',
-            color: '#fff',
-            border: '1px solid var(--border-color)'
+            background: '#1a1d23', color: '#fff', border: '1px solid var(--border-color)'
           }
         }} />
 
