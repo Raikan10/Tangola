@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import toast, { Toaster } from 'react-hot-toast'
 import ReactMarkdown from 'react-markdown'
+import features from '../features.json'
 import './index.css'
 
 declare global {
@@ -10,7 +11,33 @@ declare global {
 }
 
 type Transcript = { id: number, text: string, final: boolean };
-type Meeting = { id: string, title: string, date: string, transcripts: Transcript[], summary?: string };
+type Meeting = { id: string, title: string, date: string, transcripts: Transcript[], summary?: string, languageCode?: string };
+
+const supportedLanguages = [
+  { code: 'ta-IN', name: 'Tamil' },
+  { code: 'hi-IN', name: 'Hindi' },
+  { code: 'en-IN', name: 'English' },
+  { code: 'bn-IN', name: 'Bengali' },
+  { code: 'pa-IN', name: 'Punjabi' },
+  { code: 'gu-IN', name: 'Gujarati' },
+  { code: 'mr-IN', name: 'Marathi' },
+  { code: 'or-IN', name: 'Oriya' },
+  { code: 'te-IN', name: 'Telugu' },
+  { code: 'kn-IN', name: 'Kannada' },
+  { code: 'ml-IN', name: 'Malayalam' },
+  { code: 'as-IN', name: 'Assamese' },
+  { code: 'mai-IN', name: 'Maithili' },
+  { code: 'sa-IN', name: 'Sanskrit' },
+  { code: 'ks-IN', name: 'Kashmiri' },
+  { code: 'sd-IN', name: 'Sindhi' },
+  { code: 'ur-IN', name: 'Urdu' },
+  { code: 'ne-IN', name: 'Nepali' },
+  { code: 'mni-IN', name: 'Manipuri' },
+  { code: 'kok-IN', name: 'Konkani' },
+  { code: 'doi-IN', name: 'Dogri' },
+  { code: 'sat-IN', name: 'Santali' },
+  { code: 'brx-IN', name: 'Bodo' }
+];
 
 type Settings = {
   sarvamApiKey: string;
@@ -175,6 +202,15 @@ function App() {
     await window.electronAPI.openLogs();
   };
 
+  const handleLanguageChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newLang = e.target.value;
+    if (activeMeetingId) {
+      await window.electronAPI.updateMeetingLanguage({ id: activeMeetingId, languageCode: newLang });
+      await fetchMeetings();
+      toast.success(`Language set to ${supportedLanguages.find(l => l.code === newLang)?.name}`);
+    }
+  };
+
   const handleDeleteMeeting = async (id: string) => {
     if (!window.confirm('Are you sure you want to delete this session?')) return;
     const res = await window.electronAPI.deleteMeeting(id);
@@ -279,6 +315,21 @@ function App() {
           </div>
 
           <div className="settings-controls">
+             {features.multiLanguage && (
+               <div className="language-selector-container">
+                 <label className="setting-label">Language:</label>
+                 <select 
+                   className="language-select" 
+                   value={activeMeeting?.languageCode || 'ta-IN'} 
+                   onChange={handleLanguageChange}
+                   disabled={isRecording}
+                 >
+                   {supportedLanguages.map(lang => (
+                     <option key={lang.code} value={lang.code}>{lang.name}</option>
+                   ))}
+                 </select>
+               </div>
+             )}
              <label className="setting-label checkbox-label" title="Save raw PCM data as WAV file to user data folder.">
                <input type="checkbox" checked={debugWav} onChange={handleDebugToggle} />
                Debug WAV

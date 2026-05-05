@@ -594,3 +594,35 @@ body {
 .btn-primary:hover {
   background: var(--accent-hover);
 }
+.language-selector-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 12px;
+}
+
+.language-select {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+  transition: all 0.2s;
+  min-width: 120px;
+}
+
+.language-select:hover:not(:disabled) {
+  border-color: var(--text-secondary);
+}
+
+.language-select:focus {
+  border-color: var(--accent-color);
+}
+
+.language-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

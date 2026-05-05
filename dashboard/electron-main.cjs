@@ -41,6 +41,22 @@ console.warn = (...args) => {
 console.log('--- App Starting ---');
 console.log(`Logs located at: ${logsDir}`);
 
+// ─── Feature Flags ──────────────────────────────────────────────────────────────
+function getFeatureFlags() {
+  try {
+    const filePath = path.join(__dirname, 'features.json');
+    if (fs.existsSync(filePath)) {
+      return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    }
+  } catch (e) {
+    console.error("Error reading features.json:", e);
+  }
+  return { multiLanguage: false, debugEngine: false };
+}
+
+const features = getFeatureFlags();
+console.log(`[Features] Multi-Language: ${features.multiLanguage}, Debug Engine: ${features.debugEngine}`);
+
 // ─── Settings persistence ────────────────────────────────────────────────────────
 function getSettingsFile() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -103,7 +119,7 @@ function getEnginePaths() {
   if (isPackaged) {
     // electron-builder puts extraResources at process.resourcesPath/engine
     engineDir = path.join(process.resourcesPath, 'engine');
-  } else if (process.env.DEBUG_ENGINE === 'true') {
+  } else if (features.debugEngine) {
     // Development but want to test the standalone folder
     engineDir = path.resolve(__dirname, 'dist-engine');
   } else {
@@ -111,7 +127,7 @@ function getEnginePaths() {
   }
 
   let pythonExe;
-  if (isPackaged || process.env.DEBUG_ENGINE === 'true') {
+  if (isPackaged || features.debugEngine) {
     // In standalone distribution prepared by prepare-engine.js:
     pythonExe = process.platform === 'win32'
       ? path.join(engineDir, 'python', 'python.exe')
@@ -347,6 +363,7 @@ function createWindow() {
       title: title || `Meeting ${new Date().toLocaleString()}`,
       date: new Date().toISOString(),
       transcripts: [],
+      languageCode: 'ta-IN',
     };
     meetings.push(newMeeting);
     saveMeetings(meetings);
@@ -371,6 +388,17 @@ function createWindow() {
   ipcMain.handle('set-active-meeting', (event, id) => {
     activeMeetingId = id;
     return true;
+  });
+
+  ipcMain.handle('update-meeting-language', (event, { id, languageCode }) => {
+    const meetings = getMeetings();
+    const m = meetings.find(x => x.id === id);
+    if (m) {
+      m.languageCode = languageCode;
+      saveMeetings(meetings);
+      return { success: true };
+    }
+    return { success: false, error: 'Meeting not found' };
   });
 
   ipcMain.handle('set-debug-wav', (event, enabled) => {
@@ -446,6 +474,9 @@ function createWindow() {
         activeMeetingId = id;
       }
       const currentMeetingId = activeMeetingId;
+      const meetings = getMeetings();
+      const m = meetings.find(x => x.id === currentMeetingId);
+      const languageCode = m ? m.languageCode : 'ta-IN';
 
       await provider.startRecording(
         (text, isFinal) => {
@@ -465,7 +496,8 @@ function createWindow() {
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('provider-status', status);
           }
-        }
+        },
+        languageCode
       );
 
       pythonWs.send(JSON.stringify({ action: 'start' }));

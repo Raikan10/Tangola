@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setDebugWav: (enabled) => ipcRenderer.invoke('set-debug-wav', enabled),
   setProvider: (type) => ipcRenderer.invoke('set-provider', type),
   deleteMeeting: (id) => ipcRenderer.invoke('delete-meeting', id),
+  updateMeetingLanguage: (data) => ipcRenderer.invoke('update-meeting-language', data),
   openLogs: () => ipcRenderer.invoke('open-logs'),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),

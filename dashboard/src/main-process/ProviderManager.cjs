@@ -42,7 +42,7 @@ class SarvamProvider extends STTProvider {
     this.socket = null;
   }
 
-  async start() {
+  async start(languageCode = 'ta-IN') {
     // 1. Prevent overlapping connection attempts
     if (this.socket && (this.socket.readyState === 1 || this.socket.readyState === 0)) {
       return; 
@@ -53,7 +53,7 @@ class SarvamProvider extends STTProvider {
 
       this.socket = await this.client.speechToTextTranslateStreaming.connect({
         model: "saaras:v3",
-        "language-code": "ta-IN",
+        "language-code": languageCode,
         high_vad_sensitivity: true,
         vad_signals: true 
       });
@@ -204,11 +204,11 @@ class ProviderManager {
     }
   }
 
-  async startRecording(onTranscript, onStatus) {
+  async startRecording(onTranscript, onStatus, languageCode) {
     if (!this.provider) throw new Error("Provider not initialized");
     this.provider.onTranscript = onTranscript;
     this.provider.onStatus = onStatus;
-    await this.provider.start();
+    await this.provider.start(languageCode);
   }
 
   stopRecording() {
