@@ -235,26 +235,88 @@ function sendStatus(status) {
 }
 
 // ─── Meeting persistence ───────────────────────────────────────────────────────
-function getMeetingsFile() {
-  return path.join(app.getPath('userData'), 'meetings.json');
+function getMeetingsRoot() {
+  return path.join(app.getPath('documents'), 'Tangola');
+}
+
+function dateToFolderName(dateStr) {
+  const d = new Date(dateStr);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+}
+
+function getMeetingDir(meeting) {
+  return path.join(getMeetingsRoot(), meeting.folderName);
 }
 
 function getMeetings() {
+  const root = getMeetingsRoot();
+  if (!fs.existsSync(root)) return [];
   try {
-    if (fs.existsSync(getMeetingsFile())) {
-      return JSON.parse(fs.readFileSync(getMeetingsFile(), 'utf-8'));
+    const entries = fs.readdirSync(root, { withFileTypes: true });
+    const meetings = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const metaPath = path.join(root, entry.name, 'metadata.json');
+      if (!fs.existsSync(metaPath)) continue;
+      try {
+        const meeting = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+        const summaryPath = path.join(root, entry.name, 'summary.md');
+        if (fs.existsSync(summaryPath)) {
+          meeting.summary = fs.readFileSync(summaryPath, 'utf-8');
+        }
+        meetings.push(meeting);
+      } catch (e) {
+        console.error(`Error reading meeting from ${entry.name}:`, e);
+      }
     }
+    meetings.sort((a, b) => new Date(a.date) - new Date(b.date));
+    return meetings;
   } catch (e) {
     console.error("Error reading meetings:", e);
+    return [];
   }
-  return [];
 }
 
-function saveMeetings(meetings) {
+function saveMeeting(meeting) {
+  const root = getMeetingsRoot();
+  if (!fs.existsSync(root)) fs.mkdirSync(root, { recursive: true });
+
+  if (!meeting.folderName) {
+    const base = dateToFolderName(meeting.date);
+    let candidate = base;
+    let i = 2;
+    while (fs.existsSync(path.join(root, candidate))) candidate = `${base}_${i++}`;
+    meeting.folderName = candidate;
+  }
+
+  const dir = path.join(root, meeting.folderName);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  const { summary, ...meta } = meeting;
+  fs.writeFileSync(path.join(dir, 'metadata.json'), JSON.stringify(meta, null, 2));
+
+  const transcriptText = (meeting.transcripts || []).map(t => t.text).join('\n');
+  fs.writeFileSync(path.join(dir, 'transcript.txt'), transcriptText);
+
+  if (summary) {
+    fs.writeFileSync(path.join(dir, 'summary.md'), summary);
+  }
+}
+
+// ─── Migrate legacy meetings.json ──────────────────────────────────────────────
+function migrateLegacyMeetings() {
+  const oldFile = path.join(app.getPath('userData'), 'meetings.json');
+  if (!fs.existsSync(oldFile)) return;
   try {
-    fs.writeFileSync(getMeetingsFile(), JSON.stringify(meetings, null, 2));
-  } catch(e) {
-    console.error("Error saving meetings:", e);
+    const old = JSON.parse(fs.readFileSync(oldFile, 'utf-8'));
+    if (!Array.isArray(old) || old.length === 0) return;
+    console.log(`[Migration] Migrating ${old.length} meetings from meetings.json…`);
+    for (const m of old) saveMeeting(m);
+    fs.renameSync(oldFile, oldFile + '.bak');
+    console.log('[Migration] Done. Old file renamed to meetings.json.bak');
+  } catch (e) {
+    console.error('[Migration] Failed:', e);
   }
 }
 
@@ -356,7 +418,6 @@ function createWindow() {
   ipcMain.handle('get-meetings', () => getMeetings());
 
   ipcMain.handle('create-meeting', (event, title) => {
-    const meetings = getMeetings();
     const id = Date.now().toString();
     const newMeeting = {
       id,
@@ -365,24 +426,24 @@ function createWindow() {
       transcripts: [],
       languageCode: 'ta-IN',
     };
-    meetings.push(newMeeting);
-    saveMeetings(meetings);
+    saveMeeting(newMeeting);
     activeMeetingId = id;
     return newMeeting;
   });
 
   ipcMain.handle('delete-meeting', (event, id) => {
-    let meetings = getMeetings();
-    const initialLength = meetings.length;
-    meetings = meetings.filter(m => m.id !== id);
-    if (meetings.length !== initialLength) {
-      saveMeetings(meetings);
-      if (activeMeetingId === id) {
-        activeMeetingId = null;
-      }
+    const meetings = getMeetings();
+    const m = meetings.find(x => x.id === id);
+    if (!m) return { success: false, error: 'Meeting not found' };
+    try {
+      const dir = getMeetingDir(m);
+      if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+      if (activeMeetingId === id) activeMeetingId = null;
       return { success: true };
+    } catch (e) {
+      console.error('[IPC] Failed to delete meeting folder:', e);
+      return { success: false, error: e.message };
     }
-    return { success: false, error: 'Meeting not found' };
   });
 
   ipcMain.handle('set-active-meeting', (event, id) => {
@@ -395,7 +456,7 @@ function createWindow() {
     const m = meetings.find(x => x.id === id);
     if (m) {
       m.languageCode = languageCode;
-      saveMeetings(meetings);
+      saveMeeting(m);
       return { success: true };
     }
     return { success: false, error: 'Meeting not found' };
@@ -439,7 +500,7 @@ function createWindow() {
 
       m.title = title;
       m.summary = summaryText;
-      saveMeetings(meetings);
+      saveMeeting(m);
       return { success: true, summary: summaryText };
     } catch (error) {
       console.error('[IPC] Summarization failed:', error);
@@ -461,7 +522,6 @@ function createWindow() {
     try {
       if (meetingId) activeMeetingId = meetingId;
       if (!activeMeetingId) {
-        const meetings = getMeetings();
         const id = Date.now().toString();
         const newMeeting = {
           id,
@@ -469,8 +529,7 @@ function createWindow() {
           date: new Date().toISOString(),
           transcripts: [],
         };
-        meetings.push(newMeeting);
-        saveMeetings(meetings);
+        saveMeeting(newMeeting);
         activeMeetingId = id;
       }
       const currentMeetingId = activeMeetingId;
@@ -485,7 +544,7 @@ function createWindow() {
             const m = meetings.find(x => x.id === currentMeetingId);
             if (m) {
               m.transcripts.push({ text, final: true, id: Date.now() });
-              saveMeetings(meetings);
+              saveMeeting(m);
             }
           }
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -553,6 +612,7 @@ app.whenReady().then(async () => {
     }
   }
 
+  migrateLegacyMeetings();
   startPythonEngine();
   createWindow();
 
