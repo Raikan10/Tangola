@@ -366,33 +366,13 @@ async function connectToEngine() {
   });
 }
 
-// ─── Window ────────────────────────────────────────────────────────────────────
-function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 900,
-    minHeight: 600,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-    autoHideMenuBar: true,
-  });
-
+// ─── IPC handlers (registered once at startup) ────────────────────────────────
+function registerIpcHandlers() {
   ipcMain.handle('open-logs', () => {
     shell.openPath(logsDir);
     return true;
   });
 
-  if (process.env.NODE_ENV === 'development' && !app.isPackaged) {
-    mainWindow.loadURL('http://localhost:5173');
-  } else {
-    mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
-  }
-
-  // ── IPC handlers ──
   ipcMain.handle('get-status', () => ({
     pythonConnected: pythonWs && pythonWs.readyState === WebSocket.OPEN,
     recording: isRecording,
@@ -403,7 +383,6 @@ function createWindow() {
   ipcMain.handle('get-settings', () => getSettings());
   ipcMain.handle('save-settings', (event, newSettings) => {
     saveSettings(newSettings);
-    // Re-initialize things dynamically
     summarizer.updateSettings(newSettings);
     if (newSettings.sarvamApiKey) {
       try {
@@ -490,7 +469,7 @@ function createWindow() {
       const resultText = await summarizer.generateSummary(fullText);
       let title = m.title;
       let summaryText = resultText;
-      
+
       const titleMatch = resultText.match(/^Title:\s*(.+)/i);
       if (titleMatch) {
         title = titleMatch[1].trim();
@@ -511,7 +490,6 @@ function createWindow() {
   ipcMain.handle('start-capture', async (event, meetingId) => {
     if (isRecording) return true;
 
-    // Attempt to connect (engine may already be running)
     try {
       await connectToEngine();
     } catch (err) {
@@ -586,6 +564,28 @@ function createWindow() {
   });
 }
 
+// ─── Window ────────────────────────────────────────────────────────────────────
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 900,
+    minHeight: 600,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+    autoHideMenuBar: true,
+  });
+
+  if (process.env.NODE_ENV === 'development' && !app.isPackaged) {
+    mainWindow.loadURL('http://localhost:5173');
+  } else {
+    mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
+  }
+}
+
 // ─── App lifecycle ─────────────────────────────────────────────────────────────
 app.isQuitting = false;
 
@@ -613,6 +613,7 @@ app.whenReady().then(async () => {
   }
 
   migrateLegacyMeetings();
+  registerIpcHandlers();
   startPythonEngine();
   createWindow();
 
