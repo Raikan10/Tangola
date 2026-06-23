@@ -1,0 +1,66 @@
+name: Build & Release
+
+# Builds unsigned installers natively on each OS (no Wine, no cross-compiling)
+# and attaches them to the matching GitHub Release. Free for public repos.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to attach the builds to (e.g. v0.1.0-beta.1)'
+        required: true
+        default: 'v0.1.0-beta.1'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            build: build:win
+            artifacts: dist-electron/*.exe
+          - os: macos-14        # Apple Silicon (arm64)
+            build: build:mac-fast
+            artifacts: dist-electron/*.dmg
+          - os: macos-13        # Intel (x64)
+            build: build:mac-fast
+            artifacts: dist-electron/*.dmg
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      # prepare-engine bundles libportaudio so pyaudio works on end-user macs
+      - name: Install portaudio (macOS)
+        if: runner.os == 'macOS'
+        run: brew install portaudio
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build installer (unsigned)
+        run: npm run ${{ matrix.build }}
+
+      - name: List artifacts
+        run: ls -lh ${{ matrix.artifacts }}
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" ${{ matrix.artifacts }} --clobber
