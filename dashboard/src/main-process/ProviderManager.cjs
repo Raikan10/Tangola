@@ -75,11 +75,19 @@ class SarvamProvider extends STTProvider {
 
       this.socket.on('error', (err) => {
         console.error("Sarvam SDK Error:", err);
-        if (this.onStatus) this.onStatus('error: ' + err.message);
+        if (this.onStatus) this.onStatus('error: ' + (err && err.message));
       });
 
-      this.socket.on('close', () => {
-        if (this.onStatus) this.onStatus('disconnected');
+      this.socket.on('close', (event) => {
+        const code = event && event.code;
+        const reason = (event && event.reason) || '';
+        // Sarvam reports billing/quota failures here (e.g. code 1003,
+        // "Credits exhausted") rather than via the 'error' event.
+        const detail = code ? `code=${code}${reason ? ` reason="${reason}"` : ''}` : 'no close detail';
+        console.warn(`Sarvam socket closed: ${detail}`);
+        if (this.onStatus) {
+          this.onStatus(reason ? `disconnected: ${reason}` : 'disconnected');
+        }
       });
 
       // 3. Wait for the connection to be fully live
@@ -106,18 +114,24 @@ class SarvamProvider extends STTProvider {
   }
 
   sendAudioChunk(chunkBuffer) {
-    if (this.socket) {
-      try {
-        const base64Audio = chunkBuffer.toString('base64');
-        // Note: The translation socket specialized client uses .translate()
-        this.socket.translate({
-          audio: base64Audio,
-          sample_rate: 16000,
-          encoding: "audio/wav"
-        });
-      } catch (e) {
-        console.error("Failed to push chunk to Sarvam", e);
+    // readyState 1 === OPEN. If the server dropped us (e.g. credits exhausted),
+    // translate() throws on every frame — skip silently rather than spamming.
+    if (!this.socket || this.socket.readyState !== 1) {
+      if (!this._warnedNotOpen) {
+        console.warn("Dropping audio chunk: Sarvam socket not open (see close reason above).");
+        this._warnedNotOpen = true;
       }
+      return;
+    }
+    this._warnedNotOpen = false;
+    try {
+      this.socket.translate({
+        audio: chunkBuffer.toString('base64'),
+        sample_rate: 16000,
+        encoding: "audio/wav"
+      });
+    } catch (e) {
+      console.error("Failed to push chunk to Sarvam:", e);
     }
   }
 }

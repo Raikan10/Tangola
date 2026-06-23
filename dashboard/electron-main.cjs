@@ -23,19 +23,37 @@ function logToFile(msg, stream = mainLogStream) {
   process.stdout.write(formattedMsg);
 }
 
+// Format a single log argument. Errors are unwrapped to their message/stack
+// because JSON.stringify(new Error("x")) === "{}" (message/stack are
+// non-enumerable), which silently swallows the actual failure reason.
+function formatLogArg(a) {
+  if (a instanceof Error) {
+    const code = a.code || a.statusCode || a.status;
+    return `${a.name}: ${a.message}${code ? ` (code=${code})` : ''}${a.stack ? `\n${a.stack}` : ''}`;
+  }
+  if (typeof a === 'object' && a !== null) {
+    try {
+      return JSON.stringify(a);
+    } catch {
+      return String(a);
+    }
+  }
+  return a;
+}
+
 // Redirect console logs to main.log
 const originalLog = console.log;
 const originalError = console.error;
 const originalWarn = console.warn;
 
 console.log = (...args) => {
-  logToFile(args.map(a => (typeof a === 'object' ? JSON.stringify(a) : a)).join(' '));
+  logToFile(args.map(formatLogArg).join(' '));
 };
 console.error = (...args) => {
-  logToFile(`ERROR: ${args.map(a => (typeof a === 'object' ? JSON.stringify(a) : a)).join(' ')}`);
+  logToFile(`ERROR: ${args.map(formatLogArg).join(' ')}`);
 };
 console.warn = (...args) => {
-  logToFile(`WARN: ${args.map(a => (typeof a === 'object' ? JSON.stringify(a) : a)).join(' ')}`);
+  logToFile(`WARN: ${args.map(formatLogArg).join(' ')}`);
 };
 
 console.log('--- App Starting ---');
