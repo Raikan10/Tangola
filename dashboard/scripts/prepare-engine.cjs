@@ -68,8 +68,13 @@ async function prepareEngine(targetPlatform = process.platform, targetArch = pro
   }
 
   console.log('[PrepareEngine] Extracting Python...');
-  // Force extraction into dist-engine
-  execSync(`tar -xzf "${archive}" -C "${distEngine}"`);
+  // Force extraction into dist-engine. Use paths relative to projectRoot so a
+  // Windows drive letter (e.g. D:\) in the absolute path isn't misread by GNU
+  // tar (used via Git bash on CI) as a remote host ("Cannot connect to D:").
+  execSync(
+    `tar -xzf "${path.basename(archive)}" -C "${path.relative(projectRoot, distEngine)}"`,
+    { cwd: projectRoot }
+  );
 
   // python-build-standalone usually extracts into a 'python' folder
   // If it extracts into something else, we might need to find it and rename it.

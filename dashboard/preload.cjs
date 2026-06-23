@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteMeeting: (id) => ipcRenderer.invoke('delete-meeting', id),
   updateMeetingLanguage: (data) => ipcRenderer.invoke('update-meeting-language', data),
   openLogs: () => ipcRenderer.invoke('open-logs'),
+  openMeetingsFolder: (meetingId) => ipcRenderer.invoke('open-meetings-folder', meetingId),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
   onEngineStatus: (callback) => {

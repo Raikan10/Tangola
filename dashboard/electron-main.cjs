@@ -263,6 +263,35 @@ function dateToFolderName(dateStr) {
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
 }
 
+// Strip characters illegal in folder names (Windows is the strictest), collapse
+// whitespace, drop trailing dots/spaces, and cap length. Keeps titles readable.
+function sanitizeForFolder(name) {
+  return String(name || '')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/, '')
+    .slice(0, 60)
+    .trim();
+}
+
+// Folder name = "<date_time> <Meeting Title>" — sortable/machine-readable date
+// prefix plus a human-readable title. Falls back to date-only for the auto
+// "Meeting <timestamp>" default. `root` is used to de-duplicate collisions.
+function buildFolderName(meeting, root) {
+  const datePart = dateToFolderName(meeting.date);
+  const isDefaultTitle = /^Meeting\s+\d/.test(meeting.title || '');
+  const cleanTitle = isDefaultTitle ? '' : sanitizeForFolder(meeting.title);
+  const base = cleanTitle ? `${datePart} ${cleanTitle}` : datePart;
+
+  let candidate = base;
+  let i = 2;
+  while (fs.existsSync(path.join(root, candidate)) && candidate !== meeting.folderName) {
+    candidate = `${base} (${i++})`;
+  }
+  return candidate;
+}
+
 function getMeetingDir(meeting) {
   return path.join(getMeetingsRoot(), meeting.folderName);
 }
@@ -300,12 +329,23 @@ function saveMeeting(meeting) {
   const root = getMeetingsRoot();
   if (!fs.existsSync(root)) fs.mkdirSync(root, { recursive: true });
 
+  const desired = buildFolderName(meeting, root);
   if (!meeting.folderName) {
-    const base = dateToFolderName(meeting.date);
-    let candidate = base;
-    let i = 2;
-    while (fs.existsSync(path.join(root, candidate))) candidate = `${base}_${i++}`;
-    meeting.folderName = candidate;
+    meeting.folderName = desired;
+  } else if (desired !== meeting.folderName) {
+    // Title changed (e.g. after summarization) — rename folder to keep it readable.
+    const oldDir = path.join(root, meeting.folderName);
+    const newDir = path.join(root, desired);
+    if (fs.existsSync(oldDir) && !fs.existsSync(newDir)) {
+      try {
+        fs.renameSync(oldDir, newDir);
+        meeting.folderName = desired;
+      } catch (e) {
+        console.error('Failed to rename meeting folder:', e);
+      }
+    } else if (!fs.existsSync(oldDir)) {
+      meeting.folderName = desired;
+    }
   }
 
   const dir = path.join(root, meeting.folderName);
@@ -388,6 +428,22 @@ async function connectToEngine() {
 function registerIpcHandlers() {
   ipcMain.handle('open-logs', () => {
     shell.openPath(logsDir);
+    return true;
+  });
+
+  ipcMain.handle('open-meetings-folder', (event, meetingId) => {
+    const root = getMeetingsRoot();
+    if (!fs.existsSync(root)) fs.mkdirSync(root, { recursive: true });
+    // If a meeting id is given, open (and reveal) that meeting's folder; else the root.
+    if (meetingId) {
+      const m = getMeetings().find(x => x.id === meetingId);
+      const dir = m && getMeetingDir(m);
+      if (dir && fs.existsSync(dir)) {
+        shell.openPath(dir);
+        return true;
+      }
+    }
+    shell.openPath(root);
     return true;
   });
 

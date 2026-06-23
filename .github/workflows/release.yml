@@ -28,9 +28,6 @@ jobs:
           - os: macos-14        # Apple Silicon (arm64)
             build: build:mac-fast
             artifacts: dist-electron/*.dmg
-          - os: macos-13        # Intel (x64)
-            build: build:mac-fast
-            artifacts: dist-electron/*.dmg
     runs-on: ${{ matrix.os }}
     defaults:
       run:

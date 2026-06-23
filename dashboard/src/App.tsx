@@ -202,6 +202,10 @@ function App() {
     await window.electronAPI.openLogs();
   };
 
+  const handleOpenMeetingsFolder = async () => {
+    await window.electronAPI.openMeetingsFolder();
+  };
+
   const handleLanguageChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newLang = e.target.value;
     if (activeMeetingId) {
@@ -259,6 +263,18 @@ function App() {
                 }}
               >
                 <span>📁</span> Logs
+              </button>
+              <button
+                onClick={handleOpenMeetingsFolder}
+                title="Open the folder containing all your meeting recordings and notes"
+                style={{
+                  flex: 1,
+                  background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-secondary)',
+                  padding: '8px', borderRadius: '8px', fontSize: '12px', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px'
+                }}
+              >
+                <span>🗂️</span> Folders
               </button>
             </div>
           </div>
