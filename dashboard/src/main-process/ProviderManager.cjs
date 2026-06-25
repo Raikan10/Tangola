@@ -35,95 +35,177 @@ class STTProvider {
   sendAudioChunk(chunk) { throw new Error("Not implemented"); }
 }
 
+// Sarvam closes its streaming socket with code=1000 after ~37 min (a server-
+// side max-session cap). SarvamProvider survives arbitrarily long meetings by
+// transparently (re)connecting when the server drops us, buffering the few
+// chunks that arrive mid-handshake so nothing is lost.
+//
+// Idle-close (closing the socket during silence) is DISABLED by default: in a
+// real meeting people pause to think, and closing on every pause both shows a
+// jarring "idle" status and can truncate a transcript Sarvam is still
+// finalizing (flush+close races the final message). An idle socket costs
+// nothing — we already send no audio during silence (the engine gates it) and
+// Sarvam bills per second of audio, not per connection — so there's no reason
+// to close it. The 37-min cap is handled by reconnect regardless.
+const IDLE_CLOSE_ENABLED = false;
+const IDLE_CLOSE_MS = 120000;      // only used if IDLE_CLOSE_ENABLED is flipped on
+const MAX_RECONNECT_ATTEMPTS = 6;  // give up (and surface an error) after this
+const MAX_QUEUED_CHUNKS = 300;     // ~ a few seconds of audio held during reconnect
+
 class SarvamProvider extends STTProvider {
   constructor(apiKey) {
     super();
     this.client = new SarvamAIClient({ apiSubscriptionKey: apiKey });
     this.socket = null;
+    this.languageCode = 'ta-IN';
+    this.intentionalStop = false; // user pressed stop — do not reconnect
+    this.idleClosed = false;      // we closed on purpose after silence
+    this.connecting = false;
+    this.sendQueue = [];          // chunks buffered while (re)connecting
+    this.idleTimer = null;
+    this.reconnectTimer = null;
+    this.reconnectAttempts = 0;
   }
 
   async start(languageCode = 'ta-IN') {
-    // 1. Prevent overlapping connection attempts
-    if (this.socket && (this.socket.readyState === 1 || this.socket.readyState === 0)) {
-      return; 
-    }
+    this.languageCode = languageCode;
+    this.intentionalStop = false;
+    this.idleClosed = false;
+    this.reconnectAttempts = 0;
+    await this._connect();
+  }
 
+  async _connect() {
+    // Guard against overlapping connection attempts / already-live sockets.
+    if (this.connecting) return;
+    if (this.socket && (this.socket.readyState === 0 || this.socket.readyState === 1)) return;
+    if (this.intentionalStop) return;
+
+    this.connecting = true;
     try {
       if (this.onStatus) this.onStatus('connecting');
 
-      this.socket = await this.client.speechToTextTranslateStreaming.connect({
+      const socket = await this.client.speechToTextTranslateStreaming.connect({
         model: "saaras:v3",
-        "language-code": languageCode,
+        "language-code": this.languageCode,
         high_vad_sensitivity: true,
-        vad_signals: true 
+        vad_signals: true
       });
+      this.socket = socket;
+      this._attachHandlers(socket);
 
-      // 2. Setup standard life-cycle listeners
-      this.socket.on('message', (response) => {
-        if (response.type === "data" && response.data) {
-          if (response.data.transcript && this.onTranscript) {
-            this.onTranscript(response.data.transcript, true); 
-          }
-        } else if (response.type === "events" && response.data) {
-          if (response.data.signal_type === "START_SPEECH") {
-            if (this.onStatus) this.onStatus("listening");
-          } else if (response.data.signal_type === "END_SPEECH") {
-            if (this.onStatus) this.onStatus("processing");
-          }
-        }
-      });
-
-      this.socket.on('error', (err) => {
-        console.error("Sarvam SDK Error:", err);
-        if (this.onStatus) this.onStatus('error: ' + (err && err.message));
-      });
-
-      this.socket.on('close', (event) => {
-        const code = event && event.code;
-        const reason = (event && event.reason) || '';
-        // Sarvam reports billing/quota failures here (e.g. code 1003,
-        // "Credits exhausted") rather than via the 'error' event.
-        const detail = code ? `code=${code}${reason ? ` reason="${reason}"` : ''}` : 'no close detail';
-        console.warn(`Sarvam socket closed: ${detail}`);
-        if (this.onStatus) {
-          this.onStatus(reason ? `disconnected: ${reason}` : 'disconnected');
-        }
-      });
-
-      // 3. Wait for the connection to be fully live
-      await this.socket.waitForOpen();
+      await socket.waitForOpen();
+      this.connecting = false;
+      this.reconnectAttempts = 0;
+      this.idleClosed = false;
       if (this.onStatus) this.onStatus('connected');
-
+      this._flushQueue();
+      this._resetIdleTimer();
     } catch (err) {
+      this.connecting = false;
       console.error("Failed to start Sarvam translation streaming:", err);
-      if (this.onStatus) this.onStatus('error: ' + err.message);
-      throw err;
+      if (this.onStatus) this.onStatus('error: ' + (err && err.message));
+      this._scheduleReconnect();
     }
   }
 
-  stop() {
-    if (this.socket) {
-      try {
-        this.socket.flush();
-      } catch (e) {
-        // ignore if already closed
+  _attachHandlers(socket) {
+    socket.on('message', (response) => {
+      if (response.type === "data" && response.data) {
+        if (response.data.transcript && this.onTranscript) {
+          this.onTranscript(response.data.transcript, true);
+        }
+      } else if (response.type === "events" && response.data) {
+        if (response.data.signal_type === "START_SPEECH") {
+          if (this.onStatus) this.onStatus("listening");
+        } else if (response.data.signal_type === "END_SPEECH") {
+          if (this.onStatus) this.onStatus("processing");
+        }
       }
-      this.socket.close();
+    });
+
+    socket.on('error', (err) => {
+      // The SDK surfaces the ~37-min cap here as a bare Error; the actual
+      // close detail (code/reason) comes through the 'close' handler below,
+      // which decides whether to reconnect. Just log here.
+      console.error("Sarvam SDK Error:", err);
+    });
+
+    socket.on('close', (event) => {
+      const code = event && event.code;
+      const reason = (event && event.reason) || '';
+      const detail = code ? `code=${code}${reason ? ` reason="${reason}"` : ''}` : 'no close detail';
+      console.warn(`Sarvam socket closed: ${detail}`);
+
+      // Ignore closes from a socket we've already replaced/abandoned.
+      if (socket !== this.socket) return;
+      this.socket = null;
+
+      if (this.intentionalStop) return;          // user stop
+      if (this.idleClosed) {                      // we closed it on purpose
+        if (this.onStatus) this.onStatus('idle');
+        return;                                   // reconnect lazily on next chunk
+      }
+
+      // Genuine billing/quota failure (e.g. code 1003 "Credits exhausted") —
+      // reconnecting would just loop, so surface it instead.
+      if (code === 1003 || /credit|quota|exhaust/i.test(reason)) {
+        if (this.onStatus) this.onStatus(`error: ${reason || 'credits exhausted'}`);
+        return;
+      }
+
+      // Unexpected close (the ~37-min cap, a network blip) — reconnect.
+      if (this.onStatus) this.onStatus('reconnecting');
+      this._scheduleReconnect();
+    });
+  }
+
+  _scheduleReconnect() {
+    if (this.intentionalStop) return;
+    if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      console.error("Sarvam reconnect gave up after", this.reconnectAttempts, "attempts.");
+      if (this.onStatus) this.onStatus('error: reconnect failed');
+      return;
+    }
+    const delay = Math.min(500 * 2 ** this.reconnectAttempts, 8000);
+    this.reconnectAttempts++;
+    this.reconnectTimer = setTimeout(() => { if (!this.intentionalStop) this._connect(); }, delay);
+  }
+
+  stop() {
+    this.intentionalStop = true;
+    if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.sendQueue = [];
+    if (this.socket) {
+      try { this.socket.flush(); } catch (e) { /* already closed */ }
+      try { this.socket.close(); } catch (e) { /* already closed */ }
     }
     this.socket = null;
   }
 
   sendAudioChunk(chunkBuffer) {
-    // readyState 1 === OPEN. If the server dropped us (e.g. credits exhausted),
-    // translate() throws on every frame — skip silently rather than spamming.
-    if (!this.socket || this.socket.readyState !== 1) {
-      if (!this._warnedNotOpen) {
-        console.warn("Dropping audio chunk: Sarvam socket not open (see close reason above).");
-        this._warnedNotOpen = true;
-      }
+    if (this.intentionalStop) return;
+    // A chunk arriving means the engine's VAD detected speech. Reset the idle
+    // timer so an active speaker keeps the socket alive.
+    this._resetIdleTimer();
+
+    const open = this.socket && this.socket.readyState === 1;
+    if (open) {
+      this._translate(chunkBuffer);
       return;
     }
-    this._warnedNotOpen = false;
+
+    // Not open: buffer the chunk and make sure a connection is coming up.
+    this._queue(chunkBuffer);
+    if (this.idleClosed || (!this.socket && !this.connecting)) {
+      this.idleClosed = false;
+      this._connect();
+    }
+    // else: a connect/reconnect is already in flight — flushed on open.
+  }
+
+  _translate(chunkBuffer) {
     try {
       this.socket.translate({
         audio: chunkBuffer.toString('base64'),
@@ -132,6 +214,40 @@ class SarvamProvider extends STTProvider {
       });
     } catch (e) {
       console.error("Failed to push chunk to Sarvam:", e);
+    }
+  }
+
+  _queue(chunkBuffer) {
+    this.sendQueue.push(chunkBuffer);
+    if (this.sendQueue.length > MAX_QUEUED_CHUNKS) {
+      // Reconnect is taking too long; drop the oldest audio rather than grow
+      // unbounded. Bounded loss beats a memory leak on a real outage.
+      this.sendQueue.splice(0, this.sendQueue.length - MAX_QUEUED_CHUNKS);
+    }
+  }
+
+  _flushQueue() {
+    if (!this.socket || this.socket.readyState !== 1) return;
+    const queued = this.sendQueue;
+    this.sendQueue = [];
+    for (const chunk of queued) this._translate(chunk);
+  }
+
+  _resetIdleTimer() {
+    if (!IDLE_CLOSE_ENABLED) return; // keep the socket open through silences
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => this._onIdle(), IDLE_CLOSE_MS);
+  }
+
+  _onIdle() {
+    // No speech for IDLE_CLOSE_MS — close the socket. This frees the idle
+    // connection and resets Sarvam's session clock; the next chunk reopens it.
+    if (this.intentionalStop) return;
+    if (this.socket && (this.socket.readyState === 0 || this.socket.readyState === 1)) {
+      console.log(`[Sarvam] Idle-closing socket after ${IDLE_CLOSE_MS / 1000}s of silence.`);
+      this.idleClosed = true;
+      try { this.socket.flush(); } catch (e) { /* ignore */ }
+      try { this.socket.close(); } catch (e) { /* ignore */ }
     }
   }
 }

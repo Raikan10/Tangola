@@ -83,7 +83,7 @@ async function prepareEngine(targetPlatform = process.platform, targetArch = pro
 
   // 3. Copy Engine scripts
   console.log('[PrepareEngine] Copying engine scripts...');
-  const filesToCopy = ['main.py', 'adapter.py', 'pyproject.toml'];
+  const filesToCopy = ['main.py', 'adapter.py', 'vad.py', 'pyproject.toml'];
   filesToCopy.forEach(f => {
     const src = path.join(engineSrc, f);
     if (fs.existsSync(src)) {
@@ -95,7 +95,7 @@ async function prepareEngine(targetPlatform = process.platform, targetArch = pro
   console.log('[PrepareEngine] Installing dependencies...');
   
   const isCrossCompiling = targetPlatform !== process.platform;
-  const deps = ["numpy>=2.0.0", "pyaudio>=0.2.14", "soundcard>=0.4.5", "websockets>=13.0"];
+  const deps = ["numpy>=2.0.0", "pyaudio>=0.2.14", "soundcard>=0.4.5", "websockets>=13.0", "webrtcvad-wheels>=2.0.14"];
 
   if (isCrossCompiling) {
     console.log(`[PrepareEngine] Cross-compiling detected (Host:${process.platform} -> Target:${targetPlatform})`);

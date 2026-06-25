@@ -3,6 +3,7 @@ import websockets
 import json
 import logging
 from adapter import get_adapter
+from vad import VADGate
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -16,22 +17,35 @@ async def heartbeat(websocket):
             break
 
 async def send_audio(websocket, adapter):
-    """Streams audio chunks in a non-blocking thread to the WebSocket."""
+    """Streams audio chunks in a non-blocking thread to the WebSocket.
+
+    A VAD gate drops silence before it leaves the engine, so only speech is
+    streamed to Electron (and onward to Sarvam). Silence gaps therefore show up
+    downstream as a pause in binary traffic, which the provider uses to idle-
+    close / reconnect its Sarvam socket."""
     loop = asyncio.get_running_loop()
-    
+    gate = VADGate()
+    if gate.enabled:
+        logging.info("VAD gate active — streaming speech only (silence dropped).")
+    else:
+        logging.warning("VAD gate disabled — streaming all audio including silence.")
+
     def audio_generator():
         for chunk in adapter.get_audio_stream():
             yield chunk
 
     stream = audio_generator()
     logging.info("Started streaming audio...")
-    
+
     while adapter.is_recording:
         try:
             # Offload the blocking audio capture to a thread so asyncio event loop stays fast
             chunk = await loop.run_in_executor(None, stream.__next__)
-            # Send raw bytes for efficiency
-            await websocket.send(chunk)
+            # Gate out silence, then send the speech frames as one message
+            # (coalesced to keep wire granularity ~= one capture chunk).
+            frames = b"".join(gate.process(chunk))
+            if frames:
+                await websocket.send(frames)
         except StopIteration:
             break
         except websockets.exceptions.ConnectionClosed:

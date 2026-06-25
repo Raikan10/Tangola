@@ -9,4 +9,6 @@ dependencies = [
     "pyaudio>=0.2.14",
     "soundcard>=0.4.5",
     "websockets>=16.0",
+    # Prebuilt-wheel fork of py-webrtcvad (the original ships no 3.11+ wheels).
+    "webrtcvad-wheels>=2.0.14",
 ]

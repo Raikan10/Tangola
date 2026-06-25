@@ -1,4 +1,7 @@
+import os
 import sys
+import time
+import wave
 import numpy as np
 import logging
 
@@ -233,8 +236,46 @@ class MacAdapter(AudioAdapter):
             pass
 
 
+class FileAdapter(AudioAdapter):
+    """Streams a WAV file instead of the microphone, for deterministic testing.
+
+    Activated by setting the TANGOLA_AUDIO_FILE env var. Expects a 16 kHz mono
+    Int16 WAV. Paces chunks in real time so the VAD windowing and Sarvam
+    streaming behave exactly as they would with a live mic."""
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+        logger.info(f"[FileAdapter] Will stream from file: {path}")
+
+    def get_audio_stream(self):
+        wf = wave.open(self.path, 'rb')
+        if wf.getframerate() != SAMPLE_RATE or wf.getnchannels() != 1 or wf.getsampwidth() != 2:
+            raise RuntimeError(
+                f"[FileAdapter] {self.path} must be 16kHz mono Int16; got "
+                f"{wf.getframerate()}Hz {wf.getnchannels()}ch {wf.getsampwidth()*8}bit"
+            )
+        chunk_dur = CHUNK_SIZE / SAMPLE_RATE
+        logger.info("[FileAdapter] Streaming audio...")
+        try:
+            while self.is_recording:
+                data = wf.readframes(CHUNK_SIZE)
+                if not data:
+                    logger.info("[FileAdapter] Reached end of file.")
+                    break
+                yield data
+                time.sleep(chunk_dur)  # real-time pacing
+        finally:
+            wf.close()
+
+
 def get_adapter() -> AudioAdapter:
-    """Returns the correct audio adapter for the current OS."""
+    """Returns the correct audio adapter for the current OS (or a file adapter
+    when TANGOLA_AUDIO_FILE is set, for testing)."""
+    audio_file = os.environ.get('TANGOLA_AUDIO_FILE')
+    if audio_file:
+        logger.info(f"TANGOLA_AUDIO_FILE set — using FileAdapter ({audio_file})")
+        return FileAdapter(audio_file)
     if sys.platform == 'win32':
         logger.info("Platform: Windows — using WindowsMicrophoneAdapter (Microphone)")
         # We default to Microphone to ensure the OS registers the app for permission
